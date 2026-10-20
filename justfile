@@ -119,3 +119,16 @@ run:
 
 demo:
     go run . -demo
+
+# Native macOS CLI (requires Xcode Command Line Tools and cgo).
+# Run on the target architecture; CI covers both Intel and Apple Silicon.
+build-macos:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "$(uname -s)" == Darwin ]] || { echo 'build-macos requires macOS' >&2; exit 1; }
+    CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o dist/zwiftboard .
+
+# Native macOS quality checks; preserves the existing Windows build recipe.
+ci-macos: fmt-check test
+    go vet ./...
+    just build-macos

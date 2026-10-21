@@ -23,6 +23,9 @@ are not included in this change. Windows release assets and Scoop are unchanged.
 4. In **System Settings > Privacy & Security > Accessibility**, allow the
    terminal application or `zwiftboard` as identified by macOS. Add the built
    executable using the `+` picker if needed, then restart the terminal/program.
+   If approving the executable alone leaves input blocked, also check the
+   terminal application used to launch it. In local testing, enabling Terminal
+   and restarting the executable resolved this case.
 5. Open TextEdit, create an empty document, and focus it. The initial `keyboard`
    profile maps PLUS=p, A=a, B=b, Y=y, Z=z. Both pods stay connected; only the
    right pod supplies these mapped buttons.
@@ -48,12 +51,44 @@ physical keyboard positions**. Text on other layouts can differ. `ctrl` means
 Control, not Command; `alt` means Option. `insert` has no supported mapping.
 Physical modifiers are combined with controller modifiers. Caps Lock toggles
 without repeat; other modifiers do not repeat. Ordinary keys repeat after
-250 ms, then every 33 ms until release.
+250 ms, then every 33 ms until release. These are repeated key-down events;
+the receiving application decides whether they repeat an action. Text input
+may also use macOS's accent menu instead of inserting repeated letters.
 
 Set `focusProgramNamePrefixOnClick: null` to send input to the foreground app.
 A nonempty focus target **blocks injection** on macOS; it is never silently
 ignored. `startProgram` reports that launching is unsupported; open the target
 application yourself. Keep it in focus while using the controller.
+
+## MyWhoosh
+
+Reuse the existing `mywhoosh` bindings with both
+`focusProgramNamePrefixOnClick: null` and `startProgram: null`. Connect the
+Click pods to zwiftboard and the trainer to MyWhoosh. Open MyWhoosh manually
+and keep it focused during the ride.
+
+The right-pod mappings are PLUS=K (gear down), B=I (gear up), A=right arrow,
+Z=left arrow, and Y=U (hide/show menu in the tested version). Holding a shift
+button changed gear once in local testing, matching a held physical I/K key.
+Steering worked with MyWhoosh focused; no shift-specific repeated taps are
+emulated.
+
+## Physical results (2026-10-21)
+
+User-observed results on Apple Silicon with a Click V2 pair:
+
+- Both pods connected; all five mapped letters and simultaneous input worked
+  in TextEdit. The initial P mapping passed hold/repeat/release testing.
+- MyWhoosh shifting, left/right steering, and menu toggling worked.
+- Input remained usable after ten minutes idle and after reconnecting.
+- Turning Bluetooth off during a held right arrow stopped cursor movement
+  when the disconnect was detected. After Bluetooth was restored and the pods
+  reconnected, movement resumed while the button was still physically held.
+
+Quit and profile reload/switch during a hold, modifier combinations, and
+Bluetooth permission denial/recovery remain untested physically. Native Intel
+and Windows execution and hosted CI remain pending. MyWhoosh version and pod
+firmware were not recorded; these observations apply to the tested setup.
 
 ## Testing without a controller
 

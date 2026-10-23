@@ -129,6 +129,10 @@ build-macos:
     CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o dist/zwiftboard .
 
 # Native macOS quality checks; preserves the existing Windows build recipe.
-ci-macos: fmt-check test
+ci-macos: fmt-check test integration-macos
     go vet ./...
     just build-macos
+
+# Real input pipeline and Quartz state machine, without OS event posting.
+integration-macos:
+    CGO_ENABLED=1 go test -race -tags integration ./internal/ble -run TestIntegration -count=1

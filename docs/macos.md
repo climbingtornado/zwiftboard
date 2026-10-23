@@ -92,6 +92,20 @@ firmware were not recorded; these observations apply to the tested setup.
 
 ## Testing without a controller
 
+`just integration-macos` exercises config loading, real 0x23 frame decoding,
+notification gating, mirrored-pod deduplication, key resolution, and the Quartz
+state machine together. It checks holds and repeat, final release, disconnect
+with late frames, profile-map changes, shutdown, and blocked-focus recovery.
+The controlled clock also fires cancelled callbacks to check stale-timer safety.
+Both macOS CI architectures run this suite through `just ci-macos`.
+
+Only the clock, permission response, physical modifier state, and final OS event
+sink are replaced. The test bridge is compiled only with the `integration` tag;
+normal executables do not expose it. Tests assemble session input components
+without a Bluetooth transport: they do not test native discovery/handshakes,
+the complete Session function, TUI orchestration, macOS event delivery, or
+MyWhoosh. Physical validation remains necessary for those boundaries.
+
 ```sh
 just ci-macos
 python3 scripts/check-macos-metadata.py dist/zwiftboard

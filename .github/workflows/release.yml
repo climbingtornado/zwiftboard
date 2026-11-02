@@ -6,7 +6,7 @@ name: Release
 # Runs only after the CI checks pass on the same commit.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
 
 concurrency:
   group: release

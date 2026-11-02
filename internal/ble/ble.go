@@ -21,7 +21,10 @@ var (
 	adapter   = bluetooth.DefaultAdapter
 	connectMu sync.Mutex // Windows copes better with serialized connects
 
-	// SendAck sends ff 04 00 to devices that echo RideOn (keeps unlock).
+	// SendAck keeps the historical empty ff 04 00 ack (the RideOn echo plus
+	// every AckInterval). It does NOT renew the server-signed unlock
+	// (disproven 2026-10-22), so it is only the no-solver fallback: a wired
+	// solver replaces it with the real reply.
 	SendAck = true
 
 	// lastSeenAt records the last scan sighting of every Zwift controller
@@ -59,6 +62,28 @@ var (
 	// asleep for 30-40s; the scan-gated caller then reconnects within seconds.
 	// 0 disables the reset.
 	IdleReset = 55 * time.Second
+
+	// PostResetGrace is how long the session waits AFTER the scheduled 0x18
+	// reset for any inbound frame (challenge, status, button) before ending
+	// itself so the caller reconnects cleanly. The pod's app can die while its
+	// BLE stack still ACKs writes (seen on the LEFT pod, 2026-10-21: the stream
+	// stops, writes keep "succeeding", nothing logs — a zombie forever), and a
+	// rebooted pod can revive on a maintained link without notifications. A
+	// rebooted pod speaks within seconds (the 0xFF challenge), so 15s of total
+	// silence after OUR OWN reset means the session state is dead and only a
+	// fresh connect (handshake trio + notifications) can recover the pod. This
+	// does NOT touch pre-reset idle silence: with no reset armed the session is
+	// never ended on silence (hard-won fact). 0 disables the recycle.
+	PostResetGrace = 15 * time.Second
+
+	// AckInterval is the cadence of the historical empty ff 04 00 ack (no
+	// solver only: RideOn echo + this ladder). It does NOT renew the
+	// server-signed unlock — disproven 2026-10-22, gaps <=18s still lost the
+	// LEFT pod's button engine — so it is kept only because it is harmless
+	// without a solver, and is skipped whenever a solver is wired. A failed
+	// ack write is a REAL disconnect and ends the session like a failed
+	// keepalive. 0 disables.
+	AckInterval = 15 * time.Second
 
 	// handshakeStart is the Click V2 activation frame ("RideOn" 02 03), written
 	// once after connect. The periodic keepalive re-sends plain rideOn ("RideOn").
@@ -261,6 +286,37 @@ func keepaliveTick(resetSent bool, lastActivity, now time.Time) bool {
 	return IdleReset > 0 && !resetSent && now.Sub(lastActivity) >= IdleReset
 }
 
+// postResetStale reports that a session which ALREADY sent its scheduled 0x18
+// pod reset at resetAt has heard nothing since: the pod was rebooted on our
+// schedule and should have spoken within seconds (the 0xFF challenge), so
+// PostResetGrace of total inbound silence means the session's notification
+// state is dead (died app / re-linked pod without a CCCD) and only a fresh
+// Session() can recover the pod — the caller tears down and reconnects
+// scan-gated. A single frame after the reset marks the pod revived and
+// cancels the recycle; silence BEFORE a reset never recycles a session.
+func postResetStale(resetAt, lastActivity, now time.Time) bool {
+	return PostResetGrace > 0 && !resetAt.IsZero() &&
+		now.Sub(resetAt) >= PostResetGrace && lastActivity.Before(resetAt)
+}
+
+// ackDue reports that the session owes the pod an unlock ack (ff 04 00):
+// AckInterval has elapsed since the last ack was actually WRITTEN (a zero
+// lastAck — never acked — and AckInterval=0 both disable the periodic ack).
+// See AckInterval for why the latch must be fed on our own clock.
+func ackDue(lastAck, now time.Time) bool {
+	return AckInterval > 0 && !lastAck.IsZero() &&
+		now.Sub(lastAck) >= AckInterval
+}
+
+// livenessReportDue reports that this session owes its Info-level liveness
+// breadcrumb: one line per interval, so an Info-only log shows how stale the
+// received-frame stream has become without the Debug-rate frame spam. Used to
+// diagnose notification-stream deaths that writes cannot see (the
+// write-live zombie state).
+func livenessReportDue(lastReported, now time.Time, every time.Duration) bool {
+	return !lastReported.IsZero() && now.Sub(lastReported) >= every
+}
+
 // ReconnectWindow is how recently a controller must have advertised to count
 // as "seen": it opens the scan gate for that controller's session goroutine AND
 // marks the pod "detected" on the status screen. One value for both — the gate
@@ -325,6 +381,59 @@ func Connected(p zwift.Pod) bool {
 	return connected[p] > 0
 }
 
+// endReqs holds armed immediate ends for live sessions. EndSessionNow arms
+// one; the keepalive loop consumes it with takeEndRequest so each request
+// ends exactly one session through the normal teardown (probe-before-disconnect).
+var (
+	endReqMu sync.Mutex
+	endReqs  = map[string]struct{}{}
+)
+
+// liveAddrs maps a live session's address to its pod side; Session adds itself
+// when it becomes live and removes itself when it ends. EndSessionsForSide
+// arms end-requests for every live session of a given side.
+var (
+	liveMu    sync.Mutex
+	liveAddrs = map[string]zwift.Pod{}
+)
+
+// EndSessionNow arms an immediate end for the session to addr: the session's
+// keepalive loop takes the request and tears the session down through its
+// normal teardown, so the caller reuses the exact reconnect path instead of
+// inventing a teardown.
+func EndSessionNow(addr string) {
+	endReqMu.Lock()
+	endReqs[addr] = struct{}{}
+	endReqMu.Unlock()
+}
+
+// takeEndRequest consumes and reports an armed end-request for addr: set →
+// delete → return, so each request ends exactly one session.
+func takeEndRequest(addr string) bool {
+	endReqMu.Lock()
+	defer endReqMu.Unlock()
+	_, ok := endReqs[addr]
+	delete(endReqs, addr)
+	return ok
+}
+
+// EndSessionsForSide arms an immediate end for every live session of side p
+// and returns the addresses armed. A successful Zwift sign-in uses this to
+// recycle the LEFT pod's session so it re-challenges and gets the
+// server-signed unlock.
+func EndSessionsForSide(p zwift.Pod) []string {
+	liveMu.Lock()
+	defer liveMu.Unlock()
+	var out []string
+	for addr, side := range liveAddrs {
+		if side == p {
+			EndSessionNow(addr)
+			out = append(out, addr)
+		}
+	}
+	return out
+}
+
 // ClearSighting forgets a controller's last advertisement. Called when a
 // session ends: reconnection must then wait for a sighting STRICTLY AFTER the
 // drop. A pod may advertise throughout its connected session, so without this
@@ -374,7 +483,7 @@ func endSession(where string, probe func() error, disconnect func()) {
 
 // Session connects, handshakes and listens on one controller until the link
 // breaks; the caller retries.
-func Session(t Target, km *KeyMap) error {
+func Session(t Target, km *KeyMap, solver ChallengeSolver) error {
 	connectMu.Lock()
 	dev, async, syncRx, syncTx, err := connect(t)
 	connectMu.Unlock()
@@ -408,10 +517,9 @@ func Session(t Target, km *KeyMap) error {
 	hk := holdKeys(keys.Down, keys.Up)
 	defer hk.ReleaseAll()
 	var notifications notificationGate
-	// Defers run in reverse: stop/drain notification delivery, release keys,
-	// close the writer, then cancel the native connection. No late frame can
+	// Defers run in reverse: stop/drain notification delivery, cancel solves,
+	// release keys, close the writer, then cancel the native connection. No late frame can
 	// acquire a new held-key reservation after the final release.
-	defer notifications.Close()
 
 	// Activation sequence (verified on Click V2 hardware).
 	activation := [][]byte{
@@ -420,13 +528,46 @@ func Session(t Target, km *KeyMap) error {
 		{0x00, 0x08, 0x10},
 	}
 
-	// challengeRearm answers the 0xFF crypto challenge that arrives on async
-	// (not sync-tx): a short ff 04 00 ack keeps an already-unlocked pod's button
-	// stream from going silent.
 	challengeRearm := func() {
 		if SendAck {
 			writes.Ack()
 		}
+	}
+
+	// onChallenge answers a 0xFF 03 challenge. Without a solver this is the old
+	// empty ack. With one, the server-signed reply is fetched OFF the BLE
+	// notification goroutine (a REST call must never stall notifications) and
+	// the newest challenge wins. The reply itself is written as ff 04 00 <reply>;
+	// a failed solve falls back to the empty ack, so a network outage is never
+	// worse than no sign-in at all.
+	// solveCtx lasts exactly as long as the session: teardown cancels an
+	// in-flight (or queued) challenge solve so it cannot write to a
+	// characteristic that is being released, and a slow API cannot pin the
+	// session open after the keepalive loop returned.
+	solveCtx, cancelSolves := context.WithCancel(context.Background())
+	defer cancelSolves()
+	defer notifications.Close()
+	var solves *latestSolve
+	if solver != nil {
+		solves = newLatestSolve(func(challenge []byte) {
+			solveAndWrite(solveCtx, solver, challenge, writes, solveTimeout)
+		})
+	}
+	onChallenge := func(frame []byte) {
+		if solver == nil {
+			slog.Debug("crypto challenge from click — acking to keep the button stream alive",
+				"controller", t.Label, "frame", fmt.Sprintf("% X", frame))
+			challengeRearm()
+			return
+		}
+		payload := challengePayload(frame)
+		if len(payload) == 0 {
+			slog.Debug("crypto challenge from click — no payload to solve", "controller", t.Label, "frame", fmt.Sprintf("% X", frame))
+			return
+		}
+		slog.Debug("crypto challenge from click — solving for the server-signed unlock",
+			"controller", t.Label, "frame", fmt.Sprintf("% X", frame), "payload", fmt.Sprintf("% X", payload))
+		solves.push(payload)
 	}
 
 	handler := ButtonHandler(t.Label, km, hk.Press, hk.Release)
@@ -435,7 +576,7 @@ func Session(t Target, km *KeyMap) error {
 	// Notification callbacks run on the BLE stack's goroutine while the
 	// keepalive loop reads it below, so the access is atomic (see activityClock).
 	activity := newActivityClock()
-	if err := async.EnableNotifications(notifications.Wrap(asyncNotify(t.Label, challengeRearm, activity.touch, handler))); err != nil {
+	if err := async.EnableNotifications(notifications.Wrap(asyncNotify(onChallenge, activity.touch, handler))); err != nil {
 		return fmt.Errorf("subscribe async: %w", err)
 	}
 
@@ -456,7 +597,9 @@ func Session(t Target, km *KeyMap) error {
 			// handled by asyncNotify above.
 			if b[0] == 'R' && acked.CompareAndSwap(false, true) {
 				slog.Info("unlocked (RideOn echoed)", "controller", t.Label)
-				challengeRearm()
+				if periodicAckEnabled(solver) {
+					challengeRearm()
+				}
 			}
 		}))
 		if err != nil {
@@ -472,6 +615,16 @@ func Session(t Target, km *KeyMap) error {
 	}
 	slog.Info("connected, handshake sent, listening", "controller", t.Label)
 	markConnected(t.Side, true)
+	// Index this live session so EndSessionsForSide can arm an end-request
+	// for it (a successful Zwift sign-in recycles the LEFT pod this way).
+	liveMu.Lock()
+	liveAddrs[t.Addr.String()] = t.Side
+	liveMu.Unlock()
+	defer func() {
+		liveMu.Lock()
+		delete(liveAddrs, t.Addr.String())
+		liveMu.Unlock()
+	}()
 	defer markConnected(t.Side, false)
 
 	// Keepalive every 3s: re-send the raw "RideOn" opcode frame to sync-rx.
@@ -492,14 +645,49 @@ func Session(t Target, km *KeyMap) error {
 	tick := time.NewTicker(3 * time.Second)
 	defer tick.Stop()
 	resetSent := false
+	var resetAt time.Time    // armed when the scheduled 0x18 reset was sent
+	lastReport := time.Now() // liveness breadcrumb anchor (session start)
 	for range tick.C {
-		if keepaliveTick(resetSent, activity.last(), time.Now()) {
+		now := time.Now()
+		if takeEndRequest(t.Addr.String()) {
+			return errors.New("session end requested")
+		}
+		if livenessReportDue(lastReport, now, time.Minute) {
+			lastReport = now
+			lastAck := writes.LastAck()
+			lastAckStr := "never"
+			if !lastAck.IsZero() {
+				lastAckStr = fmt.Sprintf("%ss ago", now.Sub(lastAck).Round(time.Second))
+			}
+			slog.Info("session liveness", "controller", t.Label,
+				"secondsSinceLastFrame", now.Sub(activity.last()).Round(time.Second),
+				"lastAck", lastAckStr,
+				"resetSent", resetSent,
+				"resetStale", postResetStale(resetAt, activity.last(), now))
+		}
+		if keepaliveTick(resetSent, activity.last(), now) {
 			resetSent = true
+			resetAt = now
 			slog.Debug("idle — sending pod reset (0x18) to reboot before the ~65s sleep watchdog", "controller", t.Label, "idle", IdleReset)
 			if _, err := writes.Write(resetPod); err != nil {
 				return fmt.Errorf("reset: %w", err)
 			}
 			continue
+		}
+		if postResetStale(resetAt, activity.last(), now) {
+			return fmt.Errorf("pod silent %s past the scheduled reset (0x18) — recycling the session for a clean reconnect (handshake + notifications)", PostResetGrace)
+		}
+		// Historical empty ack (no-solver path only): re-send ff 04 00 every
+		// AckInterval, anchored at the last ack actually written. It does NOT
+		// renew the server-signed unlock (see AckInterval); it is kept because
+		// it is harmless without a solver. A wired solver replaces it with the
+		// signed reply. The successful write doubles as the liveness probe, so
+		// a failure ends the session exactly like a failed keepalive would.
+		if periodicAckEnabled(solver) && ackDue(writes.LastAck(), now) {
+			if _, err := writes.Write(ackSeq); err != nil {
+				return fmt.Errorf("disconnected: %w", err)
+			}
+			continue // the ack write itself proved the session live
 		}
 		if _, err := writes.Write(rideOn); err != nil {
 			return fmt.Errorf("disconnected: %w", err)
@@ -510,13 +698,13 @@ func Session(t Target, km *KeyMap) error {
 
 // asyncNotify wraps one controller's async (keypad) notification stream — the
 // characteristic that carries 0x23 button frames AND the Zwift 0xFF crypto
-// challenge (delivered here, NOT on sync-tx). A 0xFF 03 challenge triggers the
-// re-arm ack (ff 04 00) so an already-unlocked pod keeps its button stream
-// alive; the routine 0xFF 05 battery/status frame is deliberately ignored.
-// Every frame still reaches bh unchanged for decode/logging; any frame counts
-// as pod activity (it proves the pod's own radio woke enough to transmit),
-// which is what keeps the idle-reset from firing during a close session.
-func asyncNotify(label string, rearm func(), activity func(), bh func([]byte)) func([]byte) {
+// challenge (delivered here, NOT on sync-tx). A 0xFF 03 challenge is passed to
+// onChallenge (the session decides between the empty ack and the signed reply);
+// the routine 0xFF 05 battery/status frame is deliberately ignored. Every frame
+// still reaches bh unchanged for decode/logging; any frame counts as pod
+// activity (it proves the pod's own radio woke enough to transmit), which is
+// what keeps the idle-reset from firing during a close session.
+func asyncNotify(onChallenge func([]byte), activity func(), bh func([]byte)) func([]byte) {
 	return func(b []byte) {
 		defer recoverLog("async frame")
 		if len(b) == 0 {
@@ -524,8 +712,7 @@ func asyncNotify(label string, rearm func(), activity func(), bh func([]byte)) f
 		}
 		activity()
 		if b[0] == 0xFF && len(b) > 1 && b[1] == 0x03 {
-			slog.Debug("crypto challenge from click — acking to keep the button stream alive", "controller", label, "frame", fmt.Sprintf("% X", b))
-			rearm()
+			onChallenge(b)
 		}
 		bh(b)
 	}

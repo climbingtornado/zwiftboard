@@ -23,7 +23,15 @@ var OnKey func(button string, down bool)
 var OnLifted func(vk uint16)
 
 var (
-	keyMu sync.Mutex
+	// frameMu excludes whole decoded frames while mappings and held state reset.
+	// Lock order is frameMu -> holdOps -> keyMu. Notification/UI callbacks must
+	// not reenter ButtonHandler, KeyMap.Apply, or ReleaseAllHeld.
+	frameMu sync.Mutex
+	// holdOps serializes reservation changes with their OS output. Lock order:
+	// holdOps, then keyMu, then (after keyMu is released) the keyboard backend.
+	// Output and OnLifted callbacks must not reenter Holds or ReleaseAllHeld.
+	holdOps sync.Mutex
+	keyMu   sync.Mutex
 	// heldCount is how many LIVE handlers currently see each VK pressed.
 	// The Click pair mirrors every press — one physical press arrives as the
 	// same frame from both units (two handlers) — so a healthy pair holds 2
@@ -31,6 +39,7 @@ var (
 	// see the press sends Down, the last to see the release sends Up, and a
 	// session dying releases only a key no handler sees pressed anymore.
 	heldCount = map[uint16]int{}
+	holdEpoch uint64
 )
 
 // Holds is one session's handle on the shared held-key state. Session wires
@@ -41,14 +50,30 @@ var (
 type Holds struct {
 	down func(keys.Binding) bool
 	up   func(keys.Binding) bool
-	own  map[uint16]bool // VKs THIS handler currently sees pressed
+	// own counts how many of THIS handler's buttons currently hold the VK.
+	// A count, not a flag: two different buttons of one handler can map to
+	// the same key (the mirrored right-pod press plus the left pod's own
+	// button), and the key must stay down until the LAST of them is
+	// released. With a flag the first release wiped it and the second
+	// release found nothing to lift — the key stuck down for the process.
+	own   map[uint16]int
+	epoch uint64
 }
 
 // holdKeys wraps raw down/up key funcs with the per-VK refcount shared
 // across ALL handlers. down/up stay injectable for tests; return whether the
 // key was actually pressed/released.
 func holdKeys(down, up func(keys.Binding) bool) *Holds {
-	return &Holds{down: down, up: up, own: map[uint16]bool{}}
+	return &Holds{down: down, up: up, own: map[uint16]int{}}
+}
+
+// syncEpoch discards ownership from before a global release. keyMu must be held.
+// Old session releases must never subtract reservations acquired after a switch.
+func (h *Holds) syncEpoch() {
+	if h.epoch != holdEpoch {
+		h.own = map[uint16]int{}
+		h.epoch = holdEpoch
+	}
 }
 
 // Press is called on a pressed transition of a mapped button. It reserves the
@@ -57,8 +82,11 @@ func holdKeys(down, up func(keys.Binding) bool) *Holds {
 // reservation when the press was dropped (e.g. no focus window) so a later
 // press can still land.
 func (h *Holds) Press(b keys.Binding) {
+	holdOps.Lock()
+	defer holdOps.Unlock()
 	keyMu.Lock()
-	h.own[b.VK] = true
+	h.syncEpoch()
+	h.own[b.VK]++
 	heldCount[b.VK]++
 	first := heldCount[b.VK] == 1
 	keyMu.Unlock()
@@ -67,8 +95,15 @@ func (h *Holds) Press(b keys.Binding) {
 	}
 	if !h.down(b) {
 		keyMu.Lock()
-		delete(h.own, b.VK)
-		heldCount[b.VK]--
+		// Give back exactly what this press took: ONE reservation, not the
+		// whole key — another handler (or another button of this one) may
+		// still hold it.
+		if h.own[b.VK] > 0 {
+			h.own[b.VK]--
+		}
+		if heldCount[b.VK] > 0 {
+			heldCount[b.VK]--
+		}
 		if heldCount[b.VK] == 0 {
 			delete(heldCount, b.VK)
 		}
@@ -79,12 +114,15 @@ func (h *Holds) Press(b keys.Binding) {
 // Release is called on a released transition. It removes this handler's
 // reservation and sends Up when no live handler sees the key pressed anymore.
 func (h *Holds) Release(b keys.Binding) {
+	holdOps.Lock()
+	defer holdOps.Unlock()
 	keyMu.Lock()
-	if !h.own[b.VK] {
+	h.syncEpoch()
+	if h.own[b.VK] == 0 {
 		keyMu.Unlock() // never saw it pressed (e.g. subscribed mid-hold): nothing to lift
 		return
 	}
-	delete(h.own, b.VK)
+	h.own[b.VK]--
 	if heldCount[b.VK] > 0 {
 		heldCount[b.VK]--
 	}
@@ -101,13 +139,19 @@ func (h *Holds) Release(b keys.Binding) {
 // still sees pressed is left down: the same mirrored release is on its way to
 // that sibling and will lift it.
 func (h *Holds) ReleaseAll() {
+	holdOps.Lock()
+	defer holdOps.Unlock()
 	keyMu.Lock()
-	for vk := range h.own {
-		delete(h.own, vk)
-		if heldCount[vk] > 0 {
-			heldCount[vk]--
+	h.syncEpoch()
+	for vk, n := range h.own {
+		// Give back exactly what this handler took: its whole count, not
+		// one — it may hold the same VK through several buttons.
+		heldCount[vk] -= n
+		if heldCount[vk] < 0 {
+			heldCount[vk] = 0
 		}
 	}
+	h.own = map[uint16]int{}
 	lift := make([]uint16, 0, len(heldCount))
 	for vk, n := range heldCount {
 		if n <= 0 {
@@ -152,6 +196,16 @@ func (k *KeyMap) Swap(m map[string]keys.Binding) {
 	k.m.Store(&m)
 }
 
+// Apply releases the previous mapping and installs its replacement atomically
+// with respect to controller frames. Focus changes belong to the same boundary.
+func (k *KeyMap) Apply(m map[string]keys.Binding, target string) {
+	frameMu.Lock()
+	defer frameMu.Unlock()
+	releaseAllHeld()
+	k.Swap(m)
+	keys.SetWindowTarget(target)
+}
+
 // releaseVKs force-releases each virtual key and tells the UI (OnLifted) so a
 // dropped controller leaves no stale held row. Callers own the heldCount
 // bookkeeping; this only performs the lifts.
@@ -168,12 +222,22 @@ func releaseVKs(vks []uint16) {
 // clears the shared held count and lifts each VK (keys.ReleaseVK + OnLifted).
 // A profile switch calls it so a key held across the swap cannot stick down.
 func ReleaseAllHeld() {
+	frameMu.Lock()
+	defer frameMu.Unlock()
+	releaseAllHeld()
+}
+
+// releaseAllHeld requires frameMu. KeyMap.Apply keeps it held through retargeting.
+func releaseAllHeld() {
+	holdOps.Lock()
+	defer holdOps.Unlock()
 	keyMu.Lock()
 	vks := make([]uint16, 0, len(heldCount))
 	for vk := range heldCount {
 		vks = append(vks, vk)
 	}
 	heldCount = map[uint16]int{}
+	holdEpoch++
 	keyMu.Unlock()
 	releaseVKs(vks)
 }
@@ -186,6 +250,8 @@ func ReleaseAllHeld() {
 // unit. down/up injectable for tests.
 func ButtonHandler(label string, km *KeyMap, down, up func(keys.Binding)) func([]byte) {
 	prev := uint32(0xFFFFFFFF) // all released
+	pressed := map[uint32]keys.Binding{}
+	var epoch uint64
 	return func(b []byte) {
 		// Notification callbacks run on the BLE stack's goroutines; a panic
 		// here would crash the process, so absorb it and stay alive.
@@ -200,6 +266,12 @@ func ButtonHandler(label string, km *KeyMap, down, up func(keys.Binding)) func([
 		cur, ok := zwift.Bitmap(b[1:])
 		if !ok {
 			return
+		}
+		frameMu.Lock()
+		defer frameMu.Unlock()
+		if epoch != holdEpoch {
+			pressed = map[uint32]keys.Binding{}
+			epoch = holdEpoch
 		}
 		changed := cur ^ prev
 		if !debugEnabled() {
@@ -220,10 +292,17 @@ func ButtonHandler(label string, km *KeyMap, down, up func(keys.Binding)) func([
 			}
 			args := []any{"controller", label, "button", name, "state", state}
 			bnd, mapped := km.Get(name)
+			if state == "released" {
+				// Release only a button acquired in this generation, using its original
+				// binding. A held old button may release after a different button starts.
+				bnd, mapped = pressed[m]
+				delete(pressed, m)
+			}
 			if mapped {
 				args = append(args, "key", bnd.Token)
 				if state == "pressed" {
 					down(bnd)
+					pressed[m] = bnd
 					if h := OnKey; h != nil {
 						h(name, true)
 					}

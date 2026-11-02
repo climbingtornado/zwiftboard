@@ -73,6 +73,9 @@ func TestAckDoesNotBlockNotificationAndStopsAtClose(t *testing.T) {
 	}
 	close(release)
 	w.Close()
+	if w.LastAck().IsZero() {
+		t.Fatal("queued successful ack did not advance anchor")
+	}
 	count := calls.Load()
 	if count > 2 {
 		t.Fatalf("repeated challenges queued %d writes; want at most in-flight plus one pending", count)
@@ -83,5 +86,35 @@ func TestAckDoesNotBlockNotificationAndStopsAtClose(t *testing.T) {
 	}
 	if calls.Load() != count {
 		t.Fatal("write after close reached backend")
+	}
+}
+
+// Failed writes and queued acknowledgements must not advance the periodic ack clock.
+func TestAckAnchorOnlySuccessfulWrites(t *testing.T) {
+	fail := true
+	w := &sessionWriter{write: func(b []byte) (int, error) {
+		if fail {
+			return 0, errors.New("offline")
+		}
+		return len(b), nil
+	}}
+	_, _ = w.Write(ackSeq)
+	if !w.LastAck().IsZero() {
+		t.Fatal("failed ack advanced anchor")
+	}
+	fail = false
+	_, _ = w.Write([]byte("RideOn"))
+	if !w.LastAck().IsZero() {
+		t.Fatal("keepalive advanced ack anchor")
+	}
+	_, _ = w.Write([]byte{0xff, 4, 0, 0xab})
+	anchor := w.LastAck()
+	if anchor.IsZero() {
+		t.Fatal("signed reply did not advance anchor")
+	}
+	fail = true
+	_, _ = w.Write(ackSeq)
+	if !w.LastAck().Equal(anchor) {
+		t.Fatal("failed retry advanced anchor")
 	}
 }

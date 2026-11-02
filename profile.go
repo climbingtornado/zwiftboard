@@ -9,7 +9,6 @@ import (
 
 	"zwiftboard/internal/ble"
 	"zwiftboard/internal/config"
-	"zwiftboard/internal/keys"
 	"zwiftboard/internal/launch"
 	"zwiftboard/internal/tui"
 )
@@ -24,6 +23,7 @@ type profileState struct {
 	names []string
 	idx   int
 	cur   config.Config // active profile, for reload / manual start
+	mode  config.Mode   // controller mode, kept across profile switches
 	km    *ble.KeyMap
 	vkIdx atomic.Pointer[map[uint16][]string]
 	prog  *tea.Program // nil in -plain mode
@@ -70,6 +70,57 @@ func (s *profileState) launchCurrent() error {
 	return launch.Launch(spec)
 }
 
+// current returns the active profile's config, under the lock (a startup
+// recovery can replace it while the live feed waits for Bluetooth).
+func (s *profileState) current() config.Config {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cur
+}
+
+// reset replaces the live state after a startup config recovery: the file now
+// holds the shipped default, so the shared KeyMap, the VK index, the profile
+// list and the focus target must match it before any session uses them. It
+// returns the new profile list and index for the screen. Never call it while
+// holding the lock.
+func (s *profileState) reset(next config.Config) ([]string, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if list, _ := config.ProfileList(s.path); len(list) > 0 {
+		s.names = list
+	}
+	s.idx = indexOf(s.names, next.Profile)
+	s.installLocked(next)
+	return s.names, s.idx
+}
+
+// toggleMode flips the active profile between single and double (the TUI "m"
+// shortcut) and swaps the KeyMap to the other map. The mode survives profile
+// switches.
+func (s *profileState) toggleMode() {
+	s.mu.Lock()
+	s.mode = s.mode.Toggle()
+	s.installLocked(s.cur)
+	mode, prog := s.mode, s.prog
+	bindings := bindingTokens(s.cur.Mapping(mode))
+	s.mu.Unlock()
+
+	if prog != nil {
+		prog.Send(tui.ModeMsg{Mode: mode, Bindings: bindings})
+	}
+}
+
+// installLocked points the shared state at next: held keys are released first,
+// then the KeyMap and VK index take the active mode's map and focus is
+// retargeted. Callers hold s.mu.
+func (s *profileState) installLocked(next config.Config) {
+	s.cur = next
+	bindings := next.Mapping(s.mode)
+	s.km.Apply(bindings, next.FocusProgramNamePrefixOnClick)
+	vkIdx := vkIndex(bindings)
+	s.vkIdx.Store(&vkIdx)
+}
+
 // apply loads profile name from disk and applies it live: swap the shared KeyMap
 // in place (no BLE reconnect), force-release held keys, retarget focus and
 // rebuild the VK reverse index, then report the new state. launchProgram
@@ -94,13 +145,9 @@ func (s *profileState) apply(name string, launchProgram bool) {
 		s.names = list
 	}
 	s.idx = indexOf(s.names, next.Profile)
-	s.cur = next
-	ble.ReleaseAllHeld()
-	s.km.Swap(next.Bindings)
-	keys.SetWindowTarget(next.FocusProgramNamePrefixOnClick)
-	vkIdx := vkIndex(next.Bindings)
-	s.vkIdx.Store(&vkIdx)
+	s.installLocked(next)
 	idx := s.idx
+	mode := s.mode
 	prog := s.prog
 	s.mu.Unlock()
 
@@ -110,7 +157,8 @@ func (s *profileState) apply(name string, launchProgram bool) {
 	if prog != nil {
 		prog.Send(tui.ProfileMsg{
 			Name:         next.Profile,
-			Bindings:     bindingTokens(next.Bindings),
+			Mode:         mode,
+			Bindings:     bindingTokens(next.Mapping(mode)),
 			Focus:        next.FocusProgramNamePrefixOnClick,
 			StartProgram: next.StartProgram,
 			NoMapping:    next.Missing,

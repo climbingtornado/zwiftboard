@@ -8,7 +8,12 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"zwiftboard/internal/config"
 )
+
+// toggleModeKey switches the active profile between single and double mode.
+const toggleModeKey = "ctrl+m"
 
 // KeyStateMsg reports one emulated key's transition: Down true on press,
 // false on release. The mirrored pair fires it twice; Update dedups.
@@ -60,23 +65,31 @@ const (
 // updated live by ProfileMsg on a runtime switch.
 type Config struct {
 	BluetoothHelp string // platform-specific setup instructions
-	InputWarning  string // persistent platform/permission diagnostic; empty when ready
+	InputWarning  string // persistent platform/permission diagnostic
 	Profile       string
-	Bindings      map[string]string // button -> key token
-	Buttons       []string          // ordered table rows (right pod)
-	Focus         string            // focusProgramNamePrefixOnClick; "" = off
-	StartProgram  string            // program launched on activation; "" = none
-	NoMapping     bool              // config file missing
-	Demo          bool              // enable mock toggle keys
-	Logs          *LogBuffer        // log panel source; nil = none
-	ConfigPath    string            // shown in status messages
-	Version       string            // shown next to the title; the version stamp (e.g. "1.2.3"); "" hides it
-	OpenConfig    func() error      // opens the config file in an editor; nil = shortcut off
-	Profiles      []string          // profile names in order; nil = switching off
-	ProfileIndex  int               // active index into Profiles
+	// Mode is the active controller mode; Bindings holds that mode's map.
+	Mode     config.Mode
+	Bindings map[string]string // button -> key token
+	// LeftButtons and RightButtons are the Click V2 pods' button names, in
+	// table order: the left pod's column and the right pod's column.
+	LeftButtons  []string
+	RightButtons []string
+	Focus        string       // focusProgramNamePrefixOnClick; "" = off
+	StartProgram string       // program launched on activation; "" = none
+	NoMapping    bool         // config file missing
+	Demo         bool         // enable mock toggle keys
+	Logs         *LogBuffer   // log panel source; nil = none
+	ConfigPath   string       // shown in status messages
+	Version      string       // shown next to the title; the version stamp (e.g. "1.2.3"); "" hides it
+	OpenConfig   func() error // opens the config file in an editor; nil = shortcut off
+	Profiles     []string     // profile names in order; nil = switching off
+	ProfileIndex int          // active index into Profiles
 	// SwitchProfile requests a relative profile switch; main wires it and
 	// pushes a ProfileMsg back. nil = switching off.
 	SwitchProfile func(delta int)
+	// ToggleMode flips single/double for the active profile (the "m" shortcut);
+	// main wires it and pushes a ModeMsg back. nil = toggling off.
+	ToggleMode func()
 	// LaunchProgram starts the active profile's startProgram on demand (the "s"
 	// shortcut), so a program the user closed can be reopened. nil = not wired;
 	// the shortcut is also hidden while StartProgram is "".
@@ -84,6 +97,25 @@ type Config struct {
 	// Reload re-reads the config from disk and applies it to the active profile
 	// without a BLE reconnect (the "r" shortcut). nil = reload off.
 	Reload func()
+	// Auth is the runtime Zwift sign-in form config. AuthNone = form closed,
+	// AuthPrompt = the form owns the keyboard.
+	Auth AuthConfig
+	// RecoveryPath and RecoveryErr describe a config file that failed to load;
+	// a non-empty RecoveryPath makes the recovery dialog the first screen.
+	RecoveryPath string
+	RecoveryErr  string
+	// RecoveryStart is called on a user yes: it backs the broken file up, erases
+	// it, rebuilds the shipped default, verifies it loads and returns the display
+	// config for the restored profile. nil = no recovery dialog (and -demo).
+	RecoveryStart func(path string) (Config, bool)
+}
+
+// recoveryState is the startup config-recovery dialog inside the screen model.
+// It owns the keys until answered and is never active without RecoveryStart.
+type recoveryState struct {
+	Active bool   // the yes/no dialog is asking the user to restore the default
+	Path   string // the config file that failed to load
+	Err    string // why it failed, shown in the dialog
 }
 
 // Messages sent by main (live) or the demo handler.
@@ -101,6 +133,7 @@ type (
 	// set when the same profile was re-read from disk, so the screen can say so.
 	ProfileMsg struct {
 		Name         string
+		Mode         config.Mode
 		Bindings     map[string]string
 		Focus        string
 		StartProgram string
@@ -108,6 +141,11 @@ type (
 		Index        int
 		Err          string
 		Reload       bool
+	}
+	// ModeMsg reports the controller mode after a toggle, with the active map.
+	ModeMsg struct {
+		Mode     config.Mode
+		Bindings map[string]string
 	}
 	// openedMsg is the result of the editor launch.
 	openedMsg struct{ err error }
@@ -131,12 +169,23 @@ type Model struct {
 	logOffset    int    // lines scrolled up from the newest; 0 = following the bottom
 	focusMissing bool   // default false: no alert until a FocusMsg says so
 	latest       string // newer release tag from UpdateMsg; "" = none/dev
+	auth         authModel
+	recovery     recoveryState // startup config-recovery prompt
 }
 
 // New returns a model with Bluetooth off, both pods not detected and no key
-// state.
+// state. A broken config file (RecoveryPath + RecoveryStart) opens on the
+// recovery dialog instead of the status screen.
 func New(cfg Config) Model {
-	return Model{cfg: cfg, keys: map[string]keyState{}}
+	m := Model{
+		cfg:  cfg,
+		keys: map[string]keyState{},
+		auth: newAuthModel(cfg.Auth),
+	}
+	if cfg.RecoveryPath != "" && cfg.RecoveryStart != nil {
+		m.recovery = recoveryState{Active: true, Path: cfg.RecoveryPath, Err: cfg.RecoveryErr}
+	}
+	return m
 }
 
 // keyState is one emulated key's state: at is the press time while down and
@@ -205,12 +254,32 @@ func (m Model) tickCmd() tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-func (m Model) Init() tea.Cmd { return m.tickCmd() }
+func (m Model) Init() tea.Cmd {
+	return m.tickCmd()
+}
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+	case authLoginDoneMsg:
+		if !m.authGate() {
+			return m, nil
+		}
+		m.auth.busy = false
+		if msg.err != nil {
+			m.auth.err = "Sign-in failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.auth.password = ""
+		m.auth.passwordCaret = 0 // the password never survives a submit/re-open
+		m.auth.state = AuthNone
+		m.auth.notice = "" // signed in: the no-token notice is no longer relevant
+		return m.setStatus("Zwift sign-in succeeded — the LEFT controller's unlock will renew on the next connect")
+	case tea.PasteMsg:
+		if m.authGate() {
+			return m.pasteAuth(msg.Content), nil
+		}
 	case openedMsg:
 		if msg.err != nil {
 			return m.setStatus("Could not open " + m.cfg.ConfigPath + ": " + msg.err.Error())
@@ -246,6 +315,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.setStatus(msg.Err)
 		}
 		m.cfg.Profile = msg.Name
+		m.cfg.Mode = msg.Mode
 		m.cfg.Bindings = msg.Bindings
 		m.cfg.Focus = msg.Focus
 		m.cfg.StartProgram = msg.StartProgram
@@ -258,6 +328,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Reload {
 			return m.setStatus("Reloaded profile " + msg.Name + ".")
 		}
+	case ModeMsg:
+		m.cfg.Mode = msg.Mode
+		m.cfg.Bindings = msg.Bindings
+		// Toggling releases every held key: clear the rows so none stays lit.
+		m.keys = map[string]keyState{}
+		return m.setStatus("Mode: " + modeLabel(msg.Mode) + ".")
 	case KeyStateMsg:
 		if _, mapped := m.cfg.Bindings[msg.Button]; !mapped {
 			return m, nil
@@ -293,13 +369,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.clampLogScroll()
 		}
+	case tea.MouseClickMsg:
+		// A click inside the login form focuses the row it landed on. Only
+		// while the form owns the keyboard (AuthPrompt); when it isn't open
+		// the form isn't rendered anyway, so the click does nothing.
+		if m.auth.state == AuthPrompt {
+			if f := m.authClickField(msg.Y); f >= 0 {
+				m.auth.focus = f
+			}
+		}
 	case tea.KeyPressMsg:
+		// The startup config-recovery dialog owns the keys only while it is open
+		// (startup gate): until answered, no other shortcut fires — typing a
+		// profile name or pressing ctrl+l/ctrl+z during the dialog must not reopen it.
+		if m.recovery.Active {
+			return m.recoveryKey(msg)
+		}
+		if m.authGate() {
+			return m.updateAuth(msg)
+		}
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "ctrl+c":
 			return m, tea.Quit
 		}
-		if msg.String() == "l" {
+		if msg.String() == "ctrl+l" {
 			m.showLogs = !m.showLogs
+			return m, nil
+		}
+		// Open the runtime sign-in form on demand. Gated on Login being
+		// wired: without a solver there is nothing to sign in with. While the
+		// form is open, updateAuth owns every key, so typing "z" can't re-open.
+		if msg.String() == "ctrl+z" && m.cfg.Auth.Login != nil {
+			m.auth.state = AuthPrompt
+			m.auth.err = ""
+			m.auth.email = ""     // fresh form per open
+			m.auth.password = ""  // password never survives a submit/re-open
+			m.auth.emailCaret = 0 // caret follows the fresh (empty) field text
+			m.auth.passwordCaret = 0
+			m.auth.focus = 0
 			return m, nil
 		}
 		if m.showLogs && m.cfg.Logs != nil {
@@ -315,24 +422,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if msg.String() == "e" && m.cfg.OpenConfig != nil {
+		if msg.String() == "ctrl+e" && m.cfg.OpenConfig != nil {
 			open := m.cfg.OpenConfig
 			return m, func() tea.Msg { return openedMsg{err: open()} }
 		}
 		// Manually (re)start the profile's program (e.g. the user closed it).
 		// Gated on StartProgram too: a profile without one has nothing to start.
-		if msg.String() == "s" && m.cfg.LaunchProgram != nil && m.cfg.StartProgram != "" {
+		if msg.String() == "ctrl+s" && m.cfg.LaunchProgram != nil && m.cfg.StartProgram != "" {
 			launch := m.cfg.LaunchProgram
 			return m, func() tea.Msg { return launchedMsg{err: launch()} }
 		}
 		// Re-read config.yaml and apply it to the current profile live.
-		if msg.String() == "r" && m.cfg.Reload != nil {
+		if msg.String() == "ctrl+r" && m.cfg.Reload != nil {
 			reload := m.cfg.Reload
 			return m, func() tea.Msg { reload(); return nil }
 		}
-		// Profile switch runs in the returned Cmd, never inline: the callback
-		// may do work, and the render loop must not block. Arrow keys are not
-		// matched by the demo handler, so a plain arrow stays inert there.
+		// Toggle and profile switch run in the returned Cmd, never inline: the
+		// callbacks may do work, and the render loop must not block. Arrow keys
+		// are not matched by the demo handler, so a plain arrow stays inert there.
+		if m.cfg.ToggleMode != nil && msg.String() == toggleModeKey {
+			toggle := m.cfg.ToggleMode
+			return m, func() tea.Msg { toggle(); return nil }
+		}
 		if m.cfg.SwitchProfile != nil {
 			switchProfile := m.cfg.SwitchProfile
 			switch msg.String() {

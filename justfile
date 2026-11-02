@@ -135,4 +135,4 @@ ci-macos: fmt-check test integration-macos
 
 # Real input pipeline and Quartz state machine, without OS event posting.
 integration-macos:
-    CGO_ENABLED=1 go test -race -tags integration ./internal/ble -run TestIntegration -count=1
+    CGO_ENABLED=1 go test -race -tags integration ./... -run TestIntegration -count=1

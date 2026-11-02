@@ -1,9 +1,11 @@
 package ble
 
 import (
+	"bytes"
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // sessionWriter serializes handshake, keepalive and acknowledgement writes.
@@ -13,6 +15,7 @@ import (
 type sessionWriter struct {
 	mu       sync.Mutex
 	closed   bool
+	lastAck  time.Time
 	alive    func() error
 	write    func([]byte) (int, error)
 	ack      chan struct{}
@@ -50,7 +53,11 @@ func (w *sessionWriter) Write(b []byte) (int, error) {
 			return 0, err
 		}
 	}
-	return w.write(b)
+	n, err := w.write(b)
+	if err == nil && bytes.HasPrefix(b, ackSeq) {
+		w.lastAck = time.Now()
+	}
+	return n, err
 }
 
 func (w *sessionWriter) Ack() {
@@ -79,4 +86,11 @@ func (w *sessionWriter) Close() {
 	if w.finished != nil {
 		<-w.finished
 	}
+}
+
+// LastAck is the last successful empty or signed acknowledgement, never queue time.
+func (w *sessionWriter) LastAck() time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.lastAck
 }

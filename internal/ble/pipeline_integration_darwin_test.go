@@ -3,6 +3,8 @@
 package ble
 
 import (
+	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -39,7 +41,7 @@ func newPipeline(t *testing.T) *pipelineHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.km = NewKeyMap(cfg.Bindings)
+	h.km = NewKeyMap(cfg.Mapping(config.ModeDouble))
 	restore := keys.InstallIntegrationKeyboard(func(e keys.IntegrationEvent) bool {
 		h.events = append(h.events, e)
 		return true
@@ -55,7 +57,7 @@ func newPipeline(t *testing.T) *pipelineHarness {
 		holds := holdKeys(keys.Down, keys.Up)
 		gate := &notificationGate{}
 		handler := ButtonHandler("integration", h.km, holds.Press, holds.Release)
-		h.receive[i] = gate.Wrap(asyncNotify("integration", func() {}, func() {}, handler))
+		h.receive[i] = gate.Wrap(asyncNotify(func([]byte) {}, func() {}, handler))
 		h.close[i] = func() { gate.Close(); holds.ReleaseAll() }
 		t.Cleanup(h.close[i])
 	}
@@ -125,7 +127,7 @@ func TestIntegrationProfileSwapReleasesOldMapping(t *testing.T) {
 		t.Fatal(err)
 	}
 	ReleaseAllHeld()
-	h.km.Swap(cfg.Bindings)
+	h.km.Swap(cfg.Mapping(config.ModeDouble))
 	keys.SetWindowTarget("")
 	h.fire(t)
 	h.pair(integrationIdle)
@@ -156,4 +158,103 @@ func TestIntegrationBlockedFocusCanRecover(t *testing.T) {
 	h.pair(integrationPress)
 	h.pair(integrationIdle)
 	h.want(t, keys.IntegrationEvent{Code: 34, Down: true}, keys.IntegrationEvent{Code: 34})
+}
+
+// The left pod owns LEFT and mirrors B. Both map to I; neither release alone
+// may lift I while the other button or the sibling session still owns it.
+func TestIntegrationDualSharedKeyReleaseOrders(t *testing.T) {
+	for _, releaseLeftFirst := range []bool{true, false} {
+		t.Run(fmt.Sprint(releaseLeftFirst), func(t *testing.T) {
+			h := newPipeline(t)
+			binding, _ := keys.Resolve("i")
+			h.km.Swap(map[string]keys.Binding{"LEFT": binding, "B": binding})
+			both := []byte{0x23, 0x08, 0xde, 0xff, 0xff, 0xff, 0x0f}
+			leftOnly := []byte{0x23, 0x08, 0xfe, 0xff, 0xff, 0xff, 0x0f}
+			h.receive[0](both)
+			h.receive[1](integrationPress)
+			if releaseLeftFirst {
+				h.receive[0](integrationPress)
+			} else {
+				h.receive[0](leftOnly)
+			}
+			h.close[1]()
+			h.want(t, keys.IntegrationEvent{Code: 34, Down: true})
+			h.receive[0](integrationIdle)
+			h.fire(t)
+			h.want(t, keys.IntegrationEvent{Code: 34, Down: true}, keys.IntegrationEvent{Code: 34})
+		})
+	}
+}
+
+func TestIntegrationControllerModesWithNestedAndLegacyProfiles(t *testing.T) {
+	const flat = "    LEFT: a\n    UP: b\n    RIGHT: c\n    DOWN: d\n    MIN: e\n    A: f\n    B: g\n    Y: h\n    Z: i\n    PLUS: j\n"
+	const nested = "    single:\n      A: f\n      B: g\n      Y: h\n      Z: i\n      PLUS: j\n    double:\n      LEFT: a\n      UP: b\n      RIGHT: c\n      DOWN: d\n      MIN: e\n      A: f\n      B: g\n      Y: h\n      Z: i\n      PLUS: j\n"
+	buttons := []struct {
+		bit  uint32
+		code uint16
+		left bool
+	}{
+		{1, 0, true}, {2, 11, true}, {4, 8, true}, {8, 2, true}, {256, 14, true},
+		{16, 3, false}, {32, 5, false}, {64, 4, false}, {128, 34, false}, {4096, 38, false},
+	}
+	for _, fixture := range []struct{ name, body string }{{"legacy", flat}, {"nested", nested}} {
+		for _, mode := range []config.Mode{config.ModeSingle, config.ModeDouble} {
+			t.Run(fixture.name+"/"+string(mode), func(t *testing.T) {
+				h := newPipeline(t)
+				if err := os.WriteFile(h.configPath, []byte("defaultProfile: ride\nprofiles:\n  ride:\n"+fixture.body), 0600); err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := config.Load(h.configPath, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				h.km.Swap(cfg.Mapping(mode))
+				var want []keys.IntegrationEvent
+				for _, button := range buttons {
+					frame := []byte{0x23, 0x08}
+					frame = binary.AppendUvarint(frame, uint64(^button.bit))
+					h.receive[0](frame)
+					h.receive[0](integrationIdle)
+					if mode == config.ModeDouble || !button.left {
+						want = append(want, keys.IntegrationEvent{Code: button.code, Down: true}, keys.IntegrationEvent{Code: button.code})
+					}
+					h.want(t, want...)
+				}
+			})
+		}
+	}
+}
+
+func TestIntegrationOldSessionCannotReleaseNewHoldAfterReset(t *testing.T) {
+	for _, disconnect := range []bool{true, false} {
+		t.Run(fmt.Sprint(disconnect), func(t *testing.T) {
+			h := newPipeline(t)
+			h.receive[0](integrationPress)
+			ReleaseAllHeld()
+			h.receive[1](integrationPress)
+			if disconnect {
+				h.close[0]()
+			} else {
+				h.receive[0](integrationIdle)
+			}
+			h.want(t, keys.IntegrationEvent{Code: 34, Down: true}, keys.IntegrationEvent{Code: 34}, keys.IntegrationEvent{Code: 34, Down: true})
+			h.receive[1](integrationIdle)
+			h.want(t, keys.IntegrationEvent{Code: 34, Down: true}, keys.IntegrationEvent{Code: 34}, keys.IntegrationEvent{Code: 34, Down: true}, keys.IntegrationEvent{Code: 34})
+		})
+	}
+}
+
+func TestIntegrationOldButtonReleaseCannotConsumeNewButtonHold(t *testing.T) {
+	h := newPipeline(t)
+	binding, _ := keys.Resolve("i")
+	h.km.Swap(map[string]keys.Binding{"LEFT": binding, "B": binding})
+	left := []byte{0x23, 0x08, 0xfe, 0xff, 0xff, 0xff, 0x0f}
+	both := []byte{0x23, 0x08, 0xde, 0xff, 0xff, 0xff, 0x0f}
+	h.receive[0](left)
+	ReleaseAllHeld()
+	h.receive[0](both)
+	h.receive[0](integrationPress)
+	h.want(t, keys.IntegrationEvent{Code: 34, Down: true}, keys.IntegrationEvent{Code: 34}, keys.IntegrationEvent{Code: 34, Down: true})
+	h.receive[0](integrationIdle)
+	h.want(t, keys.IntegrationEvent{Code: 34, Down: true}, keys.IntegrationEvent{Code: 34}, keys.IntegrationEvent{Code: 34, Down: true}, keys.IntegrationEvent{Code: 34})
 }

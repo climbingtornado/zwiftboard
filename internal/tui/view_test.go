@@ -8,7 +8,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
+
+	"zwiftboard/internal/config"
 )
 
 func TestMain(m *testing.M) {
@@ -99,9 +102,9 @@ func TestViewUpdateChip(t *testing.T) {
 func TestViewIntroLine(t *testing.T) {
 	v := on(testCfg(), PodOff, PodConnected).View()
 	has(t, v, "WAITING", "Both controllers must be ON")
-	lacks(t, v, "virtual keyboard", "READY")
+	lacks(t, v, "Both pods send clicks", "READY")
 	v = on(testCfg(), PodConnected, PodConnected).View()
-	has(t, v, "READY", "Both controllers connected", "Only the Right controller is supported as a virtual keyboard")
+	has(t, v, "READY", "Both controllers connected", "Both pods send clicks")
 	lacks(t, v, "Both controllers must be ON", "WAITING")
 }
 
@@ -151,7 +154,7 @@ func TestViewLogPanel(t *testing.T) {
 	cfg.Logs = logs
 	m := on(cfg, PodConnected, PodConnected)
 	lacks(t, m.View(), "hello-from-slog")
-	has(t, m.View(), "l logs")
+	has(t, m.View(), "ctrl+l logs")
 	m.showLogs = true
 	has(t, m.View(), "hello-from-slog", "Logs")
 }
@@ -205,8 +208,8 @@ func TestViewLogPanelWiderThanCards(t *testing.T) {
 }
 
 func TestViewFooterOpenConfigHint(t *testing.T) {
-	has(t, on(openCfg(func() error { return nil }), PodConnected, PodConnected).View(), "e edit config")
-	lacks(t, on(testCfg(), PodConnected, PodConnected).View(), "edit config")
+	has(t, on(openCfg(func() error { return nil }), PodConnected, PodConnected).View(), "ctrl+e edit")
+	lacks(t, on(testCfg(), PodConnected, PodConnected).View(), "edit")
 }
 
 func TestViewFooterProfileSwitchHint(t *testing.T) {
@@ -230,13 +233,23 @@ func TestViewFooterActionHints(t *testing.T) {
 	cfg.LaunchProgram = func() error { return nil }
 	cfg.StartProgram = "MyWhooshHD.exe"
 	v := on(cfg, PodConnected, PodConnected).View()
-	has(t, v, "r reload config", "s start program")
+	has(t, v, "ctrl+r reload", "ctrl+s start")
 
 	// The reload hint is hidden without the callback, the start hint without a
 	// program on the active profile.
-	lacks(t, on(testCfg(), PodConnected, PodConnected).View(), "reload config", "start program")
+	lacks(t, on(testCfg(), PodConnected, PodConnected).View(), "ctrl+r reload", "ctrl+s start")
 	cfg.StartProgram = ""
-	lacks(t, on(cfg, PodConnected, PodConnected).View(), "start program")
+	lacks(t, on(cfg, PodConnected, PodConnected).View(), "ctrl+s start")
+}
+
+func TestViewFooterSignInHint(t *testing.T) {
+	// A wired login advertises the "ctrl+z" sign-in shortcut in the footer.
+	auth := testCfg()
+	auth.Auth = AuthConfig{Login: func(string, string) error { return nil }}
+	has(t, on(auth, PodConnected, PodConnected).View(), "ctrl+z sign in")
+
+	// No login wired (demo): the shortcut is inert, so the footer hides it.
+	lacks(t, on(testCfg(), PodConnected, PodConnected).View(), "ctrl+z sign in")
 }
 
 // The header carries the four-dot pod mark in front of the title, all on one
@@ -260,7 +273,7 @@ func TestViewHeaderProfileIndex(t *testing.T) {
 	cfg.Profile = "systm"
 	cfg.Profiles = []string{"a", "systm", "c"}
 	cfg.ProfileIndex = 1
-	has(t, on(cfg, PodConnected, PodConnected).View(), "systm 2/3")
+	has(t, on(cfg, PodConnected, PodConnected).View(), "systm (2/3)")
 }
 
 func TestViewShowsStatus(t *testing.T) {
@@ -318,4 +331,232 @@ func TestPadRightUsesDisplayWidth(t *testing.T) {
 			t.Errorf("padRight(%q) display width = %d, want 12", s, w)
 		}
 	}
+}
+
+// doubleCfg is the test config in double mode with a left-pod binding, so the
+// table shows both controllers.
+func doubleCfg() Config {
+	cfg := testCfg()
+	cfg.Mode = config.ModeDouble
+	cfg.Bindings["LEFT"] = "l"
+	return cfg
+}
+
+// buttonRows counts the table's button rows (the rows carrying the "→").
+func buttonRows(table string) int {
+	n := 0
+	for _, l := range strings.Split(table, "\n") {
+		if strings.Contains(ansi.Strip(l), "→") {
+			n++
+		}
+	}
+	return n
+}
+
+// The two pods share the table: the left pod's column beside the right
+// pod's, five rows for ten buttons.
+func TestViewTableShowsBothPods(t *testing.T) {
+	m := on(doubleCfg(), PodConnected, PodConnected)
+	m.width = 120
+	v := m.View()
+	has(t, v, "LEFT", "MIN", "PLUS")
+	if got := buttonRows(m.table()); got != 5 {
+		t.Errorf("table has %d rows, want 5 (ten buttons in two columns):\n%s", got, m.table())
+	}
+}
+
+// The two pods sit side by side on ONE line: the left pod's arrow at cell 6
+// (after the 6-cell name) and the right pod's at cell 43 (the 35-cell left
+// cell + the 2-cell gap + the 6-cell name). The cells are measured, so a
+// mis-sized cellWidth shows up here instead of as a wrapped table.
+func TestViewTableColumnsShareALine(t *testing.T) {
+	m := on(doubleCfg(), PodConnected, PodConnected)
+	m.width = 120
+	var row string
+	for _, l := range strings.Split(m.table(), "\n") {
+		if plain := ansi.Strip(l); strings.Contains(plain, "→") {
+			row = plain
+			break
+		}
+	}
+	if row == "" {
+		t.Fatalf("no button row rendered:\n%s", m.table())
+	}
+	var arrows []int
+	cell := 0
+	for _, r := range row {
+		if r == '→' {
+			arrows = append(arrows, cell)
+		}
+		cell += ansi.StringWidth(string(r))
+	}
+	if len(arrows) != 2 {
+		t.Fatalf("row has %d arrows, want 2 (one per pod):\n%q", len(arrows), row)
+	}
+	if arrows[0] != 6 {
+		t.Errorf("left arrow at cell %d, want 6 (after the 6-cell name)", arrows[0])
+	}
+	if arrows[1] != 43 {
+		t.Errorf("right arrow at cell %d, want 43 (left cell 35 + gap 2 + name 6)", arrows[1])
+	}
+	if !strings.HasPrefix(row, "LEFT") {
+		t.Errorf("row should start with the left pod's name:\n%q", row)
+	}
+	if !strings.Contains(row, "Y") {
+		t.Errorf("row should carry the right pod's name:\n%q", row)
+	}
+}
+
+// A profile that maps no left-pod button keeps today's screen: the right
+// pod's column alone, and no left column.
+func TestViewTableNoLeftColumnWithoutLeftBinding(t *testing.T) {
+	m := on(testCfg(), PodConnected, PodConnected)
+	m.width = 120
+	if plain := ansi.Strip(m.table()); strings.Contains(plain, "LEFT") {
+		t.Fatalf("no left-pod button is mapped, the table must not show a left column:\n%s", plain)
+	}
+	if got := buttonRows(m.table()); got != 5 {
+		t.Errorf("table has %d rows, want 5:\n%s", got, m.table())
+	}
+}
+
+// Too narrow for the side-by-side form: the two blocks stack instead of
+// wrapping, so the table stays ten rows tall.
+func TestViewTableStacksOnNarrowScreen(t *testing.T) {
+	m := on(doubleCfg(), PodConnected, PodConnected)
+	m.width = 60 // inner width 56 < 72
+	if got := buttonRows(m.table()); got != 10 {
+		t.Errorf("narrow table has %d rows, want 10 (the two blocks stacked):\n%s", got, m.table())
+	}
+}
+
+// No BUTTON ROW may be wider than the card's inner width: a wider line
+// wraps inside the card and shreds the layout. The focus line under the
+// table is not checked — it is 50 cells wide and has always wrapped on a
+// narrow terminal; that is a pre-existing quirk, not this change's
+// business.
+//
+// The pressed row is checked too: it is the widest one (a labelled status
+// cell is 14 cells, not 12), so a cell sized for the idle row alone would
+// overflow here.
+func TestViewTableFitsInnerWidth(t *testing.T) {
+	for _, w := range []int{40, 60, 76, 80, 120, 200} {
+		m := on(doubleCfg(), PodConnected, PodConnected)
+		m.width = w
+		inner := m.innerWidth()
+		check := func(mm Model, what string) {
+			t.Helper()
+			for _, line := range strings.Split(mm.table(), "\n") {
+				plain := ansi.Strip(line)
+				if !strings.Contains(plain, "→") {
+					continue // not a button row
+				}
+				if got := ansi.StringWidth(line); got > inner {
+					t.Errorf("width %d (%s): a button row is %d cells wide, inner width is %d:\n%q",
+						w, what, got, inner, plain)
+				}
+			}
+		}
+		check(m, "idle")
+		// One button per column: the widest row is the one where BOTH
+		// cells carry a status label (the labelled cell is 14, not 12),
+		// so a single pressed column would not measure the worst case.
+		next, _ := m.Update(KeyStateMsg{Button: "LEFT", Down: true})
+		next, _ = next.Update(KeyStateMsg{Button: "A", Down: true})
+		check(next.(Model), "pressed")
+	}
+}
+
+// Single mode shows the right controller alone and no controller heading.
+func TestViewKeyBindingsSingleModeShowsRightOnly(t *testing.T) {
+	m := on(testCfg(), PodConnected, PodConnected)
+	m.width = 120
+	table := m.table()
+	if strings.Contains(ansi.Strip(table), leftHeading) || strings.Contains(table, "LEFT") {
+		t.Fatalf("single mode must not show the left controller:\n%s", table)
+	}
+	if got := buttonRows(table); got != 5 {
+		t.Errorf("table has %d rows, want 5 (the right controller):\n%s", got, table)
+	}
+}
+
+// Double mode labels both controllers and shows all ten buttons, side by side
+// when the card is wide.
+func TestViewKeyBindingsDoubleModeLabelsBothControllers(t *testing.T) {
+	m := on(doubleCfg(), PodConnected, PodConnected)
+	m.width = 120
+	table := ansi.Strip(m.table())
+	for _, h := range []string{leftHeading, rightHeading} {
+		if !strings.Contains(table, h) {
+			t.Fatalf("double mode missing heading %q:\n%s", h, table)
+		}
+	}
+	if strings.Index(table, leftHeading) > strings.Index(table, rightHeading) {
+		t.Errorf("left heading must come before the right heading:\n%s", table)
+	}
+	if got := buttonRows(m.table()); got != 5 {
+		t.Errorf("table has %d rows, want 5 (ten buttons in two columns):\n%s", got, table)
+	}
+}
+
+// Narrow double mode stacks the controllers, the left block first, with each
+// heading above its own rows.
+func TestViewKeyBindingsDoubleModeStackedHeadings(t *testing.T) {
+	m := on(doubleCfg(), PodConnected, PodConnected)
+	m.width = 60
+	table := ansi.Strip(m.table())
+	left, right := strings.Index(table, leftHeading), strings.Index(table, rightHeading)
+	if left < 0 || right < 0 || left > right {
+		t.Fatalf("stacked table needs the left heading, then the right one:\n%s", table)
+	}
+	if got := buttonRows(m.table()); got != 10 {
+		t.Errorf("stacked table has %d rows, want 10:\n%s", got, table)
+	}
+}
+
+// The header shows the mode between the title and the profile name.
+func TestViewHeaderShowsModeBetweenTitleAndProfile(t *testing.T) {
+	cfg := testCfg()
+	cfg.Profile = "MyProfile"
+	cfg.Mode = config.ModeDouble
+	h := on(cfg, PodConnected, PodConnected).header()
+	title, mode, profile := strings.Index(h, "zwiftboard"), strings.Index(h, "DOUBLE"), strings.Index(h, "MyProfile")
+	if title < 0 || mode < 0 || profile < 0 || title >= mode || mode >= profile {
+		t.Fatalf("header want zwiftboard, Mode: DOUBLE, MyProfile in order: %q", h)
+	}
+}
+
+// The footer advertises "ctrl+m" only when toggling is wired.
+func TestViewFooterToggleModeHint(t *testing.T) {
+	cfg := testCfg()
+	cfg.ToggleMode = func() {}
+	has(t, on(cfg, PodConnected, PodConnected).View(), "ctrl+m mode")
+	lacks(t, on(testCfg(), PodConnected, PodConnected).View(), "ctrl+m mode")
+}
+
+// The full footer (every shortcut wired) wraps inside the card width, so no
+// line runs past the panels and no shortcut is dropped.
+func TestViewFooterFitsCardWidth(t *testing.T) {
+	cfg := doubleCfg()
+	cfg.OpenConfig = func() error { return nil }
+	cfg.Reload = func() {}
+	cfg.LaunchProgram = func() error { return nil }
+	cfg.StartProgram = "x.exe"
+	cfg.SwitchProfile = func(int) {}
+	cfg.Profiles = []string{"a", "b"}
+	cfg.Auth.Login = func(string, string) error { return nil }
+	cfg.ToggleMode = func() {}
+	m := on(cfg, PodConnected, PodConnected)
+	m.width = 300
+	footer := m.footer()
+	if strings.Contains(footer, "\n") {
+		t.Fatalf("full footer should stay on one line at %d cells:\n%s", m.innerWidth(), footer)
+	}
+	for _, line := range strings.Split(footer, "\n") {
+		if w := ansi.StringWidth(line); w > m.innerWidth() {
+			t.Fatalf("footer line is %d cells, card inner width is %d", w, m.innerWidth())
+		}
+	}
+	has(t, m.View(), "ctrl+l logs", "ctrl+e edit", "ctrl+r reload", "ctrl+s start",
+		"ctrl+←/→ switch profile", "ctrl+z sign in", "ctrl+c quit")
 }

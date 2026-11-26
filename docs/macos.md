@@ -114,10 +114,31 @@ User-observed results on Apple Silicon with a Click V2 pair:
   when the disconnect was detected. After Bluetooth was restored and the pods
   reconnected, movement resumed while the button was still physically held.
 
-Quit and profile reload/switch during a hold, modifier combinations, and
-Bluetooth permission denial/recovery remain untested physically. Native Intel
-and Windows execution and hosted CI remain pending. MyWhoosh version and pod
-firmware were not recorded; these observations apply to the tested setup.
+At that time, quit and profile reload/switch during a hold, modifier combinations,
+and Bluetooth permission denial/recovery had not been tested physically.
+MyWhoosh version and pod firmware were not recorded; these observations apply
+to the tested setup. See the current results below for later coverage.
+
+## Current physical testing (2026-11-26)
+
+The user completed these desk tests on macOS with both Click V2 controllers and
+reported no issues. The tested code includes the platform shortcut fix `bbad4dc`.
+
+1. Shared left/right arrow holds in TextEdit: LEFT + Z and RIGHT + A, with both release orders.
+2. Switching from double to single mode during a left-controller hold, then confirming right-controller input still works.
+3. Disabling Bluetooth during a hold, checking that movement stops, and reconnecting for further input.
+4. Quitting with Ctrl+C during a hold, checking that movement stops and Terminal remains usable.
+
+Earlier in this session, the user confirmed Ctrl+G mode switching and restoration
+of MyWhoosh / SINGLE after restart. Startup, single/double button mapping, sign-in,
+and MyWhoosh key comparisons were reported completed; detailed gear directions
+were not recorded. The usefulness of B=Enter remains unconfirmed.
+
+Still pending on this build: sustained left unlock renewal and ten-minute idle,
+MyWhoosh steering and shifting while riding, profile reload/switch during a hold,
+permission denial/recovery, config recovery, and modifier combinations.
+TextEdit checks establish keyboard behavior, not riding behavior or trainer response.
+macOS/MyWhoosh versions and controller firmware have not been recorded.
 
 ## Testing without a controller
 

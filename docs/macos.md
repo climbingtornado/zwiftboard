@@ -84,6 +84,7 @@ New configs start in single mode. Later starts restore the saved profile and mod
 Older configs without `defaultMode` start in double mode. Press Ctrl+G to switch modes.
 Ctrl+M remains an alias in terminals that report it separately. Apple Terminal
 sends Ctrl+M as Enter, so use Ctrl+G there. Enter does not switch modes.
+Windows and Linux retain Ctrl+M; Ctrl+G is specific to macOS.
 Single mode uses right-controller buttons only. Both pods remain connected in either mode.
 Mode changes release held keys before installing the other mapping.
 

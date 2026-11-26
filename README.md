@@ -15,7 +15,7 @@
 
 Zwift locks the Click V2 to its own app. `zwiftboard` frees it: connect over Bluetooth, press a button, and it **types the keys your app already understands**. Gear up, gear down, steer, pause, change view.
 
-- **One pod or two** - New configs start with right-only input. Press `ctrl+g` for both controllers; the selection is saved.
+- **One pod or two** - New configs start with right-only input. Press `ctrl+m` (Windows/Linux) or `ctrl+g` (macOS) for both controllers; the selection is saved.
 - **No Unlock Tricks** - No need to start Zwift App to unlock controllers. Sign in with `ctrl+z` to answer left-controller unlock challenges.
 - **Free and open source** - no subscription, no paid tier.
 - **Starts your app for you (Windows)** - each profile can launch its cycling app once Bluetooth is up, so one double-click on `zwiftboard.exe` opens the whole setup. See [Start a program with a profile](#start-a-program-with-a-profile).
@@ -73,7 +73,7 @@ application; window focusing and app launching remain Windows-only.
    form — only the RIGHT controller works normally then, and the warning
    stays on the screen. The prompt comes back on the next launch until you
    sign in.
-4. **Run it** and press a button on each controller while it scans to wake them. New configs start in single mode (RIGHT pod only); press `ctrl+g` for both pods:
+4. **Run it** and press a button on each controller while it scans to wake them. New configs start in single mode (RIGHT pod only); press `ctrl+m` (Windows/Linux) or `ctrl+g` (macOS) for both pods:
 
    ```
    zwiftboard.exe                 # startup profile: `defaultProfile:` from the config (ships as notepad)
@@ -150,7 +150,7 @@ Each profile has two button maps:
 - `single:` — the **right** controller only (`Y Z A B PLUS`).
 - `double:` — **both** controllers: the left pod's `LEFT UP RIGHT DOWN MIN` plus the right pod's buttons.
 
-Press `ctrl+g` on the status screen to switch between them. The mode is shown in the
+Press `ctrl+m` (Windows/Linux) or `ctrl+g` (macOS) on the status screen to switch between them. The mode is shown in the
 header (`Mode: SINGLE` / `Mode: DOUBLE`, in its own magenta chip), and the Keys Bindings panel lists only the buttons of
 the active mode. The mode stays the same when you switch profile. A button that
 is not in the active map is ignored, so in single mode the left pod does nothing.
@@ -242,7 +242,7 @@ sequences (kitty/CSI-u); the `ctrl+n` / `ctrl+p` fallbacks work everywhere.
 
 - `ctrl+r` — reload `config.yaml` and apply it to the current profile live (no
   restart, no BLE reconnect; `loglevel:` still needs a restart);
-- `ctrl+g` — **Toggle mode**: switch the current profile between `single` and `double`;
+- `ctrl+m` (Windows/Linux) or `ctrl+g` (macOS) — **Toggle mode**: switch the current profile between `single` and `double`;
 - `ctrl+s` — start the current profile's `startProgram` again (e.g. after you closed
   it); hidden when the profile has no `startProgram`;
 - `ctrl+l` — show/hide the log panel (`k`/`j` or the mouse wheel scroll it);
@@ -367,7 +367,7 @@ connects are serialized so they never overlap an active scan.
 | Keys land in the wrong window              | Set `focusProgramNamePrefixOnClick:` to the game's window title or `.exe` — zwiftboard brings it to the front and taps only into it.                                                                                                                                                                                                                                                                                                        |
 | App quits / stops responding after a while | zwiftboard never exits on a runtime fault — a glitchy BLE event logs `recovered from panic` (a `WARN` with stack) and the session retry / scan loop keeps it alive. Switching Windows Bluetooth off mid-run also survives: sessions end, scanning retries every 3s, and it reconnects when Bluetooth comes back. If buttons go silent instead, check the `session ended` lines: that is a lost connection recovering after 5s, not a crash. |
 | Nothing works with Zwift open              | Close Zwift / Companion first: one BLE connection per controller.                                                                                                                                                                                                                                                                                                                                                                           |
-| LEFT pod does nothing                      | It is off in single mode. Press `ctrl+g` on the status screen to switch to DOUBLE (the header shows the mode).                                                                                                                                                                                                                                                                                                                                  |
+| LEFT pod does nothing                      | It is off in single mode. Press `ctrl+m` (Windows/Linux) or `ctrl+g` (macOS) on the status screen to switch to DOUBLE (the header shows the mode).                                                                                                                                                                                                                                                                                                                                  |
 | Log warns "legacy flat format"             | The profile uses the old layout (buttons directly under the profile name). It still works; move its buttons under `single:` and `double:` to silence the warning (see Controller modes).                                                                                                                                                                                                                                                  |
 
 Not a HID keyboard: Zwift itself won't see the Click as a Bluetooth keyboard

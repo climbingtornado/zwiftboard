@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"runtime"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -14,7 +15,7 @@ func TestLegacyTerminalModeShortcut(t *testing.T) {
 		name, input string
 		toggle      bool
 	}{
-		{"ctrl-g", "\x07", true},
+		{"ctrl-g", "\x07", runtime.GOOS == "darwin"},
 		{"ctrl-m-is-enter", "\r", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -54,13 +55,49 @@ func TestModeShortcutDoesNotEscapeDialogs(t *testing.T) {
 			} else {
 				m.recovery.Active = true
 			}
-			_, cmd := m.Update(ctrlKey("g"))
+			_, cmd := m.Update(ctrlKey(toggleModeKey[len(toggleModeKey)-1:]))
 			if cmd != nil {
 				cmd()
 			}
 			if calls != 0 {
 				t.Fatal("mode shortcut escaped dialog")
 			}
+		})
+	}
+}
+
+func TestPlatformModeShortcuts(t *testing.T) {
+	old := toggleModeKey
+	t.Cleanup(func() { toggleModeKey = old })
+	for _, platform := range []string{"darwin", "windows", "linux"} {
+		t.Run(platform, func(t *testing.T) {
+			want := "ctrl+m"
+			if platform == "darwin" {
+				want = "ctrl+g"
+			}
+			toggleModeKey = modeShortcut(platform)
+			if toggleModeKey != want {
+				t.Fatalf("shortcut=%s, want %s", toggleModeKey, want)
+			}
+			for _, chord := range []string{"g", "m"} {
+				calls := 0
+				cfg := testCfg()
+				cfg.ToggleMode = func() { calls++ }
+				_, cmd := New(cfg).Update(ctrlKey(chord))
+				if cmd != nil {
+					cmd()
+				}
+				expected := 0
+				if chord == "m" || platform == "darwin" {
+					expected = 1
+				}
+				if calls != expected {
+					t.Fatalf("ctrl+%s: calls=%d, want %d", chord, calls, expected)
+				}
+			}
+			cfg := testCfg()
+			cfg.ToggleMode = func() {}
+			has(t, on(cfg, PodConnected, PodConnected).View(), want+" mode")
 		})
 	}
 }

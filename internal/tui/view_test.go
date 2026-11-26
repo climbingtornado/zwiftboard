@@ -526,12 +526,12 @@ func TestViewHeaderShowsModeBetweenTitleAndProfile(t *testing.T) {
 	}
 }
 
-// The footer advertises "ctrl+g" only when toggling is wired.
+// The footer advertises the platform shortcut only when toggling is wired.
 func TestViewFooterToggleModeHint(t *testing.T) {
 	cfg := testCfg()
 	cfg.ToggleMode = func() {}
-	has(t, on(cfg, PodConnected, PodConnected).View(), "ctrl+g mode")
-	lacks(t, on(testCfg(), PodConnected, PodConnected).View(), "ctrl+g mode")
+	has(t, on(cfg, PodConnected, PodConnected).View(), toggleModeKey+" mode")
+	lacks(t, on(testCfg(), PodConnected, PodConnected).View(), toggleModeKey+" mode")
 }
 
 // The full footer (every shortcut wired) wraps inside the card width, so no

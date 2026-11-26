@@ -5,6 +5,7 @@ package tui
 
 import (
 	"maps"
+	"runtime"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -12,9 +13,16 @@ import (
 	"zwiftboard/internal/config"
 )
 
-// Ctrl+G has an unambiguous legacy terminal encoding. Ctrl+M often arrives
-// as Enter; retain it only when a terminal reports the distinct chord.
-const toggleModeKey = "ctrl+g"
+// macOS uses Ctrl+G because Apple Terminal decodes Ctrl+M as Enter.
+// Windows and Linux retain Ctrl+M. Distinct Ctrl+M remains a macOS alias.
+var toggleModeKey = modeShortcut(runtime.GOOS)
+
+func modeShortcut(goos string) string {
+	if goos == "darwin" {
+		return "ctrl+g"
+	}
+	return "ctrl+m"
+}
 
 // KeyStateMsg reports one emulated key's transition: Down true on press,
 // false on release. The mirrored pair fires it twice; Update dedups.
@@ -88,7 +96,7 @@ type Config struct {
 	// SwitchProfile requests a relative profile switch; main wires it and
 	// pushes a ProfileMsg back. nil = switching off.
 	SwitchProfile func(delta int)
-	// ToggleMode flips single/double for the active profile (the "m" shortcut);
+	// ToggleMode flips single/double for the active profile (the platform mode shortcut);
 	// main wires it and pushes a ModeMsg back. nil = toggling off.
 	ToggleMode func()
 	// LaunchProgram starts the active profile's startProgram on demand (the "s"

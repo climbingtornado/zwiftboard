@@ -28,7 +28,7 @@ are not included in this change. Windows release assets and Scoop are unchanged.
    and restarting the executable resolved this case.
 5. Open TextEdit, create an empty document, and focus it. The initial `keyboard`
    profile starts in single mode. Right buttons map to p, a, b, y, z.
-   Press Ctrl+M in the status screen for double mode. Left buttons then map
+   Press Ctrl+G in the status screen for double mode. Left buttons then map
    LEFT=l, UP=u, RIGHT=r, DOWN=d, MIN=m.
 
 The config is created at `~/Library/Application Support/zwiftboard/config.yml`
@@ -81,7 +81,9 @@ emulated.
 ## Controller modes and left unlock
 
 New configs start in single mode. Later starts restore the saved profile and mode.
-Older configs without `defaultMode` start in double mode. Press Ctrl+M to switch modes.
+Older configs without `defaultMode` start in double mode. Press Ctrl+G to switch modes.
+Ctrl+M remains an alias in terminals that report it separately. Apple Terminal
+sends Ctrl+M as Enter, so use Ctrl+G there. Enter does not switch modes.
 Single mode uses right-controller buttons only. Both pods remain connected in either mode.
 Mode changes release held keys before installing the other mapping.
 
@@ -164,7 +166,7 @@ CPU architecture, pod firmware if known, and target application with results.
 - Deny then grant Accessibility; verify input stays blocked until authorized.
 - Connect both pods; test all ten buttons in double mode and right-only input in single mode.
 - Sign into Zwift and verify left input beyond one minute and after ten minutes idle.
-- Test shared-key holds and Ctrl+M mode changes during a hold.
+- Test shared-key holds and Ctrl+G mode changes during a hold.
 - Tap, hold and release a letter in TextEdit; verify repeat stops on release.
 - Test arrows and game polling, F keys, Control/Option/Shift, and Caps Lock;
   include a physical modifier held while pressing a controller button.

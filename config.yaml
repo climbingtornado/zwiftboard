@@ -65,7 +65,7 @@ loglevel: info
 # MODES (per profile): each profile has two button maps.
 #   single: the RIGHT controller only (Y Z A B PLUS).
 #   double: BOTH controllers (LEFT UP RIGHT DOWN MIN and Y Z A B PLUS). Used at startup when defaultMode is absent.
-# Press ctrl+m in the status screen to toggle between them. A button that is not in
+# Press ctrl+g in the status screen to toggle between them. A button that is not in
 # the active map is ignored, so in single mode the LEFT pod does nothing.
 # Gear keys depend on profile and mode; see each mapping below.
 profiles:

@@ -12,8 +12,9 @@ import (
 	"zwiftboard/internal/config"
 )
 
-// toggleModeKey switches the active profile between single and double mode.
-const toggleModeKey = "ctrl+m"
+// Ctrl+G has an unambiguous legacy terminal encoding. Ctrl+M often arrives
+// as Enter; retain it only when a terminal reports the distinct chord.
+const toggleModeKey = "ctrl+g"
 
 // KeyStateMsg reports one emulated key's transition: Down true on press,
 // false on release. The mirrored pair fires it twice; Update dedups.
@@ -440,7 +441,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Toggle and profile switch run in the returned Cmd, never inline: the
 		// callbacks may do work, and the render loop must not block. Arrow keys
 		// are not matched by the demo handler, so a plain arrow stays inert there.
-		if m.cfg.ToggleMode != nil && msg.String() == toggleModeKey {
+		if m.cfg.ToggleMode != nil && (msg.String() == toggleModeKey || msg.String() == "ctrl+m") {
 			toggle := m.cfg.ToggleMode
 			return m, func() tea.Msg { toggle(); return nil }
 		}

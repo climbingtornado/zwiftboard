@@ -47,7 +47,7 @@ func nextProfileIndex(n, idx, delta int) int {
 }
 
 // tuiConfig turns the loaded config into what the status screen displays.
-func tuiConfig(cfg config.Config, demo bool, logs *tui.LogBuffer, configPath string) tui.Config {
+func tuiConfig(cfg config.Config, demo bool, mode config.Mode, logs *tui.LogBuffer, configPath string) tui.Config {
 	warning := ""
 	if !demo {
 		warning = keys.InputWarning()
@@ -56,8 +56,8 @@ func tuiConfig(cfg config.Config, demo bool, logs *tui.LogBuffer, configPath str
 		BluetoothHelp: ble.BluetoothHelp(),
 		InputWarning:  warning,
 		Profile:       cfg.Profile,
-		Mode:          config.ModeDouble,
-		Bindings:      bindingTokens(cfg.Double),
+		Mode:          mode,
+		Bindings:      bindingTokens(cfg.Mapping(mode)),
 		LeftButtons:   zwift.LeftButtons,
 		RightButtons:  zwift.RightButtons,
 		Focus:         cfg.FocusProgramNamePrefixOnClick,

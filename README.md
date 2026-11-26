@@ -11,16 +11,16 @@
   </p>
 </div>
 
-**Shift gears, steer and pause from your Click V2, in the cycling app you already use.**
+**Make your Zwift Click V2 act as a computer keyboard to shift gears & steer in any cycling apps.**
 
 Zwift locks the Click V2 to its own app. `zwiftboard` frees it: connect over Bluetooth, press a button, and it **types the keys your app already understands**. Gear up, gear down, steer, pause, change view.
 
-- **Real gear shifting** - `PLUS` shifts down, and the left pod's `MIN` shifts up in double mode. Same rule in every profile.
-- **Ready for your app** - profiles for MyWhoosh, Zwift, TrainerRoad, Rouvy, TrainingPeaks Virtual, Biketerra, Tacx Training and Wahoo SYSTM. Or map any program yourself.
-- **One pod or two** - both pods in double mode by default; use `ctrl+m` for right-only input.
-- **Free and open source** - no subscription, no paid tier. The right pod needs no account.
+- **One pod or two** - New configs start with right-only input. Press `ctrl+m` for both controllers; the selection is saved.
+- **No Unlock Tricks** - No need to start Zwift App to unlock controllers. Sign in with `ctrl+z` to answer left-controller unlock challenges.
+- **Free and open source** - no subscription, no paid tier.
 - **Starts your app for you (Windows)** - each profile can launch its cycling app once Bluetooth is up, so one double-click on `zwiftboard.exe` opens the whole setup. See [Start a program with a profile](#start-a-program-with-a-profile).
 - **Clicks land in the right window (Windows)** - optionally bring your app to the front before every key, so a press never goes to the wrong window.
+- **Ready for your app** - profiles for MyWhoosh, Zwift, TrainerRoad, Rouvy, TrainingPeaks Virtual, Biketerra, Tacx Training and Wahoo SYSTM. Or map any program yourself.
 - **Windows and macOS, Zwift Click V2** - see [macOS setup and validation](docs/macos.md).
 
 ---
@@ -155,10 +155,10 @@ header (`Mode: SINGLE` / `Mode: DOUBLE`, in its own magenta chip), and the Keys 
 the active mode. The mode stays the same when you switch profile. A button that
 is not in the active map is ignored, so in single mode the left pod does nothing.
 
-In double mode the gear keys follow one rule in every program that has a gear
-key: the right pod's `PLUS` shifts down (easier), and the left pod's `MIN` shifts
-up (harder). Programs without a keyboard gear key use their closest effort or
-resistance key, listed in `config.yaml`.
+MyWhoosh double mode maps `PLUS=K`, `MIN=I`, and `B=Enter`; single mode maps
+`PLUS=I` and `B=K`. Other profiles define their own gear or effort keys in `config.yaml`.
+New configs start in single mode. Profile and mode changes are saved for the next start.
+Older configs without `defaultMode` retain the double-mode fallback.
 
 Both maps are required in every profile. A profile written in the old format (its
 buttons directly under the profile name, with no `single:`/`double:`) still loads:

@@ -258,3 +258,29 @@ func TestIntegrationOldButtonReleaseCannotConsumeNewButtonHold(t *testing.T) {
 	h.receive[0](integrationIdle)
 	h.want(t, keys.IntegrationEvent{Code: 34, Down: true}, keys.IntegrationEvent{Code: 34}, keys.IntegrationEvent{Code: 34, Down: true}, keys.IntegrationEvent{Code: 34})
 }
+
+func TestIntegrationRejectedPressCannotReleaseAcceptedSharedHold(t *testing.T) {
+	var events []keys.IntegrationEvent
+	allowed := false
+	restore := keys.InstallIntegrationKeyboard(func(e keys.IntegrationEvent) bool {
+		events = append(events, e)
+		return true
+	}, func(time.Duration, func()) func() { return func() {} }, func() bool { return allowed })
+	t.Cleanup(restore)
+	keys.SetWindowTarget("")
+	b, _ := keys.Resolve("i")
+	holds := holdKeys(keys.Down, keys.Up)
+	t.Cleanup(holds.ReleaseAll)
+	receive := ButtonHandler("permission recovery", NewKeyMap(map[string]keys.Binding{"LEFT": b, "B": b}), holds.Press, holds.Release)
+	receive([]byte{0x23, 0x08, 0xfe, 0xff, 0xff, 0xff, 0x0f}) // LEFT rejected
+	allowed = true
+	receive([]byte{0x23, 0x08, 0xde, 0xff, 0xff, 0xff, 0x0f}) // B accepted
+	receive(integrationPress)                                 // old LEFT release must not lift B
+	if !reflect.DeepEqual(events, []keys.IntegrationEvent{{Code: 34, Down: true}}) {
+		t.Fatalf("rejected press consumed accepted hold: %+v", events)
+	}
+	receive(integrationIdle)
+	if !reflect.DeepEqual(events, []keys.IntegrationEvent{{Code: 34, Down: true}, {Code: 34}}) {
+		t.Fatalf("final release: %+v", events)
+	}
+}

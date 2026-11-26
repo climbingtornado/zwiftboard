@@ -15,10 +15,15 @@ type IntegrationEvent struct {
 // ReleaseVK and Shutdown still exercise the real Quartz state machine.
 // Tests using this process-global seam must not run in parallel. Restore only
 // after their notification delivery has stopped and holds have been released.
-func InstallIntegrationKeyboard(post func(IntegrationEvent) bool, after func(time.Duration, func()) func()) func() {
+// The optional trust function models Accessibility permission changes.
+func InstallIntegrationKeyboard(post func(IntegrationEvent) bool, after func(time.Duration, func()) func(), trust ...func() bool) func() {
+	trusted := func() bool { return true }
+	if len(trust) > 0 {
+		trusted = trust[0]
+	}
 	old := darwinKeyboard
 	darwinKeyboard = newQuartzKeyboard(func(e quartzEvent) bool {
 		return post(IntegrationEvent{Code: e.code, Down: e.down, Repeat: e.repeat})
-	}, func() bool { return true }, CurrentWindowTarget, after, func() uint64 { return 0 })
+	}, trusted, CurrentWindowTarget, after, func() uint64 { return 0 })
 	return func() { darwinKeyboard.shutdown(); darwinKeyboard = old }
 }

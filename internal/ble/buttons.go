@@ -80,8 +80,8 @@ func (h *Holds) syncEpoch() {
 // VK in the shared count (deduping the mirrored duplicate from the pair's
 // other unit), sends Down on the first reservation only, and undoes the
 // reservation when the press was dropped (e.g. no focus window) so a later
-// press can still land.
-func (h *Holds) Press(b keys.Binding) {
+// press can still land. The result reports whether this button owns a reservation.
+func (h *Holds) Press(b keys.Binding) bool {
 	holdOps.Lock()
 	defer holdOps.Unlock()
 	keyMu.Lock()
@@ -91,7 +91,7 @@ func (h *Holds) Press(b keys.Binding) {
 	first := heldCount[b.VK] == 1
 	keyMu.Unlock()
 	if !first {
-		return
+		return true
 	}
 	if !h.down(b) {
 		keyMu.Lock()
@@ -108,7 +108,9 @@ func (h *Holds) Press(b keys.Binding) {
 			delete(heldCount, b.VK)
 		}
 		keyMu.Unlock()
+		return false
 	}
+	return true
 }
 
 // Release is called on a released transition. It removes this handler's
@@ -248,7 +250,7 @@ func releaseAllHeld() {
 // edge-triggered diff ignores identical retransmits within one handler, and
 // the shared heldCount absorbs the same frame arriving from the pair's other
 // unit. down/up injectable for tests.
-func ButtonHandler(label string, km *KeyMap, down, up func(keys.Binding)) func([]byte) {
+func ButtonHandler(label string, km *KeyMap, down func(keys.Binding) bool, up func(keys.Binding)) func([]byte) {
 	prev := uint32(0xFFFFFFFF) // all released
 	pressed := map[uint32]keys.Binding{}
 	var epoch uint64
@@ -301,7 +303,9 @@ func ButtonHandler(label string, km *KeyMap, down, up func(keys.Binding)) func([
 			if mapped {
 				args = append(args, "key", bnd.Token)
 				if state == "pressed" {
-					down(bnd)
+					if !down(bnd) {
+						continue
+					}
 					pressed[m] = bnd
 					if h := OnKey; h != nil {
 						h(name, true)

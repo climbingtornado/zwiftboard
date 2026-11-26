@@ -19,7 +19,7 @@ func TestMacFirstRunUsesForegroundKeyboardProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Profile != "keyboard" || cfg.StartProgram != "" || cfg.FocusProgramNamePrefixOnClick != "" || len(cfg.Single) != 5 || len(cfg.Double) != 10 {
+	if cfg.Profile != "keyboard" || cfg.DefaultMode != config.ModeSingle || cfg.StartProgram != "" || cfg.FocusProgramNamePrefixOnClick != "" || len(cfg.Single) != 5 || len(cfg.Double) != 10 {
 		t.Fatalf("first-run config is not usable on macOS: %+v", cfg)
 	}
 }
@@ -36,7 +36,7 @@ func TestMacGeneratedProfilesClearWindowsOptions(t *testing.T) {
 			if recovery {
 				writeFile(t, path, "profiles: [broken")
 				cfg, ok := recoverConfig(path)
-				if !ok || cfg.Profile != "keyboard" {
+				if !ok || cfg.Profile != "keyboard" || cfg.DefaultMode != config.ModeSingle {
 					t.Fatalf("recovery = %+v, %v", cfg, ok)
 				}
 			} else if !ensureConfig(path) {

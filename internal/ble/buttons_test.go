@@ -36,16 +36,14 @@ func (r *keyRecorder) counts() (int, int) {
 	return r.down, r.up
 }
 
-// tapDown/tapUp are void versions for ButtonHandler calls that bypass holdKeys
-// (ButtonHandler's down/up seam is void; holdKeys needs the bool form).
-func (r *keyRecorder) tapDown(b keys.Binding) { _ = r.downFn(b) }
-func (r *keyRecorder) tapUp(b keys.Binding)   { _ = r.upFn(b) }
+// tapUp adapts successful output to the release callback.
+func (r *keyRecorder) tapUp(b keys.Binding) { _ = r.upFn(b) }
 
 // One press/release cycle = one down + one up, and a bounce (quick
 // release/re-press) must not swallow the second down.
 func TestButtonHandlerDownUp(t *testing.T) {
 	rec := &keyRecorder{}
-	h := ButtonHandler("t", NewKeyMap(map[string]keys.Binding{"LEFT": {VK: 0x25, Token: "left"}}), rec.tapDown, rec.tapUp)
+	h := ButtonHandler("t", NewKeyMap(map[string]keys.Binding{"LEFT": {VK: 0x25, Token: "left"}}), rec.downFn, rec.tapUp)
 
 	press := []byte{0x23, 0x08, 0xFE, 0xFF, 0xFF, 0xFF, 0x0F}
 	idle := []byte{0x23, 0x08, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F}
@@ -165,7 +163,7 @@ func TestDroppedPressNotRecordedHeld(t *testing.T) {
 // Retransmission of the same frame (same bitmap) is not a new transition.
 func TestIdenticalRetransmitNoDoubleDown(t *testing.T) {
 	rec := &keyRecorder{}
-	h := ButtonHandler("t", NewKeyMap(map[string]keys.Binding{"LEFT": {VK: 0x25, Token: "left"}}), rec.tapDown, rec.tapUp)
+	h := ButtonHandler("t", NewKeyMap(map[string]keys.Binding{"LEFT": {VK: 0x25, Token: "left"}}), rec.downFn, rec.tapUp)
 
 	press := []byte{0x23, 0x08, 0xFE, 0xFF, 0xFF, 0xFF, 0x0F}
 	h(press)
@@ -183,7 +181,7 @@ func TestButtonHandlerPanicRecovered(t *testing.T) {
 	var mu sync.Mutex
 	burst := 0
 	downs := 0
-	h := ButtonHandler("t", NewKeyMap(map[string]keys.Binding{"A": {VK: 0x41, Token: "a"}}), func(keys.Binding) {
+	h := ButtonHandler("t", NewKeyMap(map[string]keys.Binding{"A": {VK: 0x41, Token: "a"}}), func(keys.Binding) bool {
 		mu.Lock()
 		burst++
 		n := burst
@@ -194,6 +192,7 @@ func TestButtonHandlerPanicRecovered(t *testing.T) {
 		mu.Lock()
 		downs++
 		mu.Unlock()
+		return true
 	}, func(keys.Binding) {})
 
 	press := []byte{0x23, 0x08, 0xEF, 0xFF, 0xFF, 0xFF, 0x0F} // A pressed
@@ -215,7 +214,7 @@ func TestButtonHandlerPanicRecovered(t *testing.T) {
 
 func TestButtonHandlerUnmappedButtonNoDown(t *testing.T) {
 	rec := &keyRecorder{}
-	h := ButtonHandler("t", NewKeyMap(nil), rec.tapDown, rec.tapUp)
+	h := ButtonHandler("t", NewKeyMap(nil), rec.downFn, rec.tapUp)
 	h([]byte{0x23, 0x08, 0xFE, 0xFF, 0xFF, 0xFF, 0x0F})
 	if down, up := rec.counts(); down != 0 || up != 0 {
 		t.Fatalf("down = %d, up = %d, want 0/0 with empty key map", down, up)
@@ -267,7 +266,7 @@ func TestOnKeyNotCalledUnmapped(t *testing.T) {
 	OnKey = func(string, bool) { called = true }
 	t.Cleanup(func() { OnKey = nil })
 
-	h := ButtonHandler("t", NewKeyMap(map[string]keys.Binding{}), func(keys.Binding) {}, func(keys.Binding) {})
+	h := ButtonHandler("t", NewKeyMap(map[string]keys.Binding{}), func(keys.Binding) bool { return true }, func(keys.Binding) {})
 	h([]byte{0x23, 0x08, 0xDF, 0xFF, 0xFF, 0xFF, 0x0F})
 	if called {
 		t.Fatal("OnKey must not fire for an unmapped button")
@@ -416,12 +415,13 @@ func TestMappingApplyDoesNotSplitAnInFlightFrame(t *testing.T) {
 	km := NewKeyMap(map[string]keys.Binding{"LEFT": {VK: 0x49}, "B": {VK: 0x4a}})
 	entered, finish, handled, applied := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var downs []uint16
-	handler := ButtonHandler("test", km, func(b keys.Binding) {
+	handler := ButtonHandler("test", km, func(b keys.Binding) bool {
 		if len(downs) == 0 {
 			close(entered)
 			<-finish
 		}
 		downs = append(downs, b.VK)
+		return true
 	}, func(keys.Binding) {})
 	both := []byte{0x23, 0x08, 0xde, 0xff, 0xff, 0xff, 0x0f}
 	go func() { handler(both); close(handled) }()

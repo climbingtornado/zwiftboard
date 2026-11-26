@@ -27,14 +27,16 @@ are not included in this change. Windows release assets and Scoop are unchanged.
    terminal application used to launch it. In local testing, enabling Terminal
    and restarting the executable resolved this case.
 5. Open TextEdit, create an empty document, and focus it. The initial `keyboard`
-   profile starts in double mode. Right buttons map to p, a, b, y, z.
-   Left buttons map LEFT=l, UP=u, RIGHT=r, DOWN=d, MIN=m.
+   profile starts in single mode. Right buttons map to p, a, b, y, z.
+   Press Ctrl+M in the status screen for double mode. Left buttons then map
+   LEFT=l, UP=u, RIGHT=r, DOWN=d, MIN=m.
 
 The config is created at `~/Library/Application Support/zwiftboard/config.yml`
 (unless `LOCALAPPDATA` is explicitly set, preserving the existing config-path
 behavior). New and recovered macOS configs select `keyboard`. All bundled profiles have
 focus and launch settings cleared on macOS. Existing or migrated configs remain
-unchanged unless you explicitly accept config recovery. Pass `-config /path/to/config.yml` to use an existing file,
+unchanged on startup. Switching profiles or modes saves that selection in the config.
+Accepted recovery replaces the config after making a backup. Pass `-config /path/to/config.yml` to use an existing file,
 `-p keyboard` to select that profile, or `-plain -v` for diagnostic logs.
 An older config may not contain the new profile: add it from `config.yaml` or
 clear focus/launch settings on a profile you already use.
@@ -68,18 +70,19 @@ Reuse the existing `mywhoosh` bindings with both
 Click pods to zwiftboard and the trainer to MyWhoosh. Open MyWhoosh manually
 and keep it focused during the ride.
 
-Upstream mappings now use PLUS=I, B=K, and MIN=K in double mode. A/Z and
+Single mode uses PLUS=I and B=K. Double mode uses PLUS=K, MIN=I, and B=Enter. A/Z and
 LEFT/RIGHT send steering arrows. Y sends U for the menu. Verify gear direction
 in your installed MyWhoosh version; these differ from the October test mapping.
 Holding a shift
-button changed gear once in local testing, matching a held physical I/K key.
+button changed gear once in earlier local testing.
 Steering worked with MyWhoosh focused; no shift-specific repeated taps are
 emulated.
 
 ## Controller modes and left unlock
 
-Startup uses double mode. Press Ctrl+M to switch to single mode. Single mode
-uses right-controller buttons only. Both pods remain connected in either mode.
+New configs start in single mode. Later starts restore the saved profile and mode.
+Older configs without `defaultMode` start in double mode. Press Ctrl+M to switch modes.
+Single mode uses right-controller buttons only. Both pods remain connected in either mode.
 Mode changes release held keys before installing the other mapping.
 
 The left controller requires a valid, time-limited unlock. Press Ctrl+Z in the

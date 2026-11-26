@@ -91,7 +91,7 @@ func TestIntegrationTUIConfigReportsMacFocusBlockAfterRecovery(t *testing.T) {
 	next := config.Config{Profile: "ride", FocusProgramNamePrefixOnClick: "MyWhoosh.exe"}
 	state := &profileState{mode: config.ModeDouble, km: ble.NewKeyMap(nil)}
 	state.reset(next)
-	screen := tuiConfig(state.current(), false, nil, "config.yml")
+	screen := tuiConfig(state.current(), false, state.mode, nil, "config.yml")
 	if !strings.Contains(screen.InputWarning, "unsupported") {
 		t.Fatalf("configured focus block absent: %q", screen.InputWarning)
 	}
@@ -144,5 +144,39 @@ func TestIntegrationProfileActionsIgnoreOldButtonRelease(t *testing.T) {
 				t.Fatalf("final B release: got %+v, want %+v", events, want)
 			}
 		})
+	}
+}
+
+func TestIntegrationGeneratedRecoveryUsesSingleMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte("profiles: [broken"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var events []keys.IntegrationEvent
+	restore := keys.InstallIntegrationKeyboard(func(e keys.IntegrationEvent) bool { events = append(events, e); return true }, func(time.Duration, func()) func() { return func() {} })
+	t.Cleanup(restore)
+	old := keys.CurrentWindowTarget()
+	keys.SetWindowTarget("")
+	t.Cleanup(func() { keys.SetWindowTarget(old) })
+	b, _ := keys.Resolve("i")
+	s := &profileState{path: path, mode: config.ModeDouble, km: ble.NewKeyMap(map[string]keys.Binding{"B": b})}
+	holds := ble.NewIntegrationHolds()
+	t.Cleanup(holds.ReleaseAll)
+	receive := ble.ButtonHandler("recovery", s.km, holds.Press, holds.Release)
+	receive([]byte{0x23, 0x08, 0xdf, 0xff, 0xff, 0xff, 0x0f})
+	cfg, ok := recoverConfig(path)
+	if !ok {
+		t.Fatal("config recovery failed")
+	}
+	s.reset(cfg)
+	screen := tuiConfig(cfg, false, startupMode(cfg), nil, path)
+	if s.mode != config.ModeSingle || screen.Mode != s.mode || cfg.Profile != "keyboard" {
+		t.Fatal("recovery state differs from generated config")
+	}
+	if _, mapped := s.km.Get("LEFT"); mapped {
+		t.Fatal("recovery retained double mapping")
+	}
+	if !reflect.DeepEqual(events, []keys.IntegrationEvent{{Code: 34, Down: true}, {Code: 34}}) {
+		t.Fatalf("recovery hold cleanup=%+v", events)
 	}
 }
